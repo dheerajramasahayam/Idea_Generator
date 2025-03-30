@@ -1,0 +1,40 @@
+[Unit]
+Description=SaaS Idea Automator Script
+# Ensures network is up before starting
+After=network.target
+# Optional: Add database dependency if needed, e.g., After=postgresql.service
+
+[Service]
+# --- User to run the script as ---
+User=your_username # !!! IMPORTANT: Replace with your actual username on the server
+Group=your_group   # !!! IMPORTANT: Replace with your actual group (often same as username)
+
+# --- Working Directory ---
+# Directory where your project code resides
+WorkingDirectory=/opt/saas-automator # !!! IMPORTANT: Adjust if you cloned elsewhere
+
+# --- Command to Execute ---
+# Full path to the python executable within your virtual environment
+# Followed by the full path to your main script
+ExecStart=/opt/saas-automator/venv/bin/python3 /opt/saas-automator/saas_idea_automator.py
+
+# --- Restart Policy ---
+# Restart the service if it exits, crashes, or stops
+Restart=always
+# Wait 10 seconds before attempting restart
+RestartSec=10
+
+# --- Logging ---
+# Redirect standard output and error streams to log files
+# Ensure the user running the service has write permissions to these files/directory
+StandardOutput=append:/opt/saas-automator/automator_stdout.log
+StandardError=append:/opt/saas-automator/automator_stderr.log
+
+# --- Environment Variables (Alternative to python-dotenv) ---
+# If you prefer systemd to handle environment variables instead of the script using python-dotenv,
+# you can uncomment and use EnvironmentFile. Ensure the .env file format is compatible (simple KEY=VALUE pairs).
+# EnvironmentFile=/opt/saas-automator/.env
+
+[Install]
+# Enable the service to start automatically on boot
+WantedBy=multi-user.target
