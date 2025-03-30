@@ -1,0 +1,35 @@
+# Environment variables
+.env
+
+# Virtual environment
+venv/
+/venv/
+*.venv
+.venv/
+
+# Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Log files
+*.log
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Output files
+*.md
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# IDE / Editor specific files
+.vscode/
+.idea/
+*.swp
+*~
