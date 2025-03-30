@@ -15,14 +15,21 @@ __pycache__/
 
 # Log files
 *.log
+automator_stdout.log
+automator_stderr.log
 
 # Database files
 *.db
 *.sqlite
 *.sqlite3
+ideas_state.db
 
-# Output files
-*.md
+# Generated Output/Data files
+gemini_rated_ideas.md
+processed_ideas.log # Old state file if present
+
+# Ignore the directory containing other markdown notes
+ideas/
 
 # OS-specific files
 .DS_Store
