@@ -16,7 +16,7 @@ UPTIME_KUMA_PUSH_URL = os.environ.get("UPTIME_KUMA_PUSH_URL") # Load Push URL
 # Use environment variables or fall back to defaults
 try:
     IDEAS_PER_BATCH = int(os.environ.get("IDEAS_PER_BATCH", 10))
-    RATING_THRESHOLD = float(os.environ.get("RATING_THRESHOLD", 7.5))
+    RATING_THRESHOLD = float(os.environ.get("RATING_THRESHOLD", 9.0)) # Increased threshold to 9.0
     SEARCH_RESULTS_LIMIT = int(os.environ.get("SEARCH_RESULTS_LIMIT", 10)) # Increased
     DELAY_BETWEEN_IDEAS = int(os.environ.get("DELAY_BETWEEN_IDEAS", 5))
     MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", 1))
@@ -27,7 +27,7 @@ try:
 except ValueError as e:
     logging.error(f"Error parsing numeric config from environment variables: {e}. Using defaults.")
     IDEAS_PER_BATCH = 10
-    RATING_THRESHOLD = 7.5
+    RATING_THRESHOLD = 9.0 # Increased threshold default to 9.0
     SEARCH_RESULTS_LIMIT = 10 # Increased
     DELAY_BETWEEN_IDEAS = 5
     MAX_CONCURRENT_TASKS = 1
