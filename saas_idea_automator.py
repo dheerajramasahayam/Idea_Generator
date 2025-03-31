@@ -7,85 +7,19 @@ import logging
 import re
 import sys
 import os
-from collections import Counter # For trend analysis
+# from collections import Counter # No longer needed here
 
 # Import modular components
 import config
 import api_clients
-import state_manager # Uses SQLite now
+import state_manager
+import analysis_utils # Import the new analysis module
 
-# --- Trend Analysis Helpers --- (Adapted from trend_analyzer.py)
-
-# Basic list of common English stop words + some generic terms
-STOP_WORDS = set([
-    "a", "an", "the", "and", "or", "but", "if", "of", "at", "by", "for", "with",
-    "about", "against", "between", "into", "through", "during", "before", "after",
-    "above", "below", "to", "from", "up", "down", "in", "out", "on", "off", "over",
-    "under", "again", "further", "then", "once", "here", "there", "when", "where",
-    "why", "how", "all", "any", "both", "each", "few", "more", "most", "other",
-    "some", "such", "no", "nor", "not", "only", "own", "same", "so", "than", "too",
-    "very", "s", "t", "can", "will", "just", "don", "should", "now", "d", "ll", "m",
-    "o", "re", "ve", "y", "ain", "aren", "couldn", "didn", "doesn", "hadn", "hasn",
-    "haven", "isn", "ma", "mightn", "mustn", "needn", "shan", "shouldn", "wasn",
-    "weren", "won", "wouldn", "tool", "app", "software", "platform", "manager",
-    "tracker", "analyzer", "generator", "based", "using", "via", "like", "e.g.",
-    "for", "with", "and", "new", "get", "use", "best", "top", "simple", "advanced",
-    "idea", "ideas", "saas", "system", "service", "solution", "data", "automation",
-    "niche", "focus", "specific", "regional", "monitor", "detector", "predictor",
-    "comparator", "estimator", "profiler", "visualizer", "aggregator", "calculator",
-    "assistant", "engine", "checker", "enhancer", "optimizer", "ai", "api", "web",
-    "online", "digital", "client", "customer", "user", "business", "agency",
-    "freelancer", "marketing", "sales", "content", "seo", "e-commerce", "shop",
-    "store", "product", "listing", "performance", "report", "reporting", "analysis",
-    "analytics", "management", "generation", "generator", "request", "collection",
-    "sync", "code", "fee", "tax", "rate", "value", "cost", "revenue", "roi",
-    "time", "page", "workflow", "schema", "change", "impact", "dependency",
-    "uptime", "latency", "error", "pattern", "log", "file", "coverage", "debt",
-    "feature", "release", "tender", "keyword", "alert", "plan", "pricing",
-    "competitor", "comparison", "trend", "growth", "sentiment", "communication",
-    "asset", "scope", "creep", "proposal", "domain", "backlink", "publication",
-    "sequence", "email", "affiliate", "link", "onboarding", "compliance",
-    "subcontractor", "real", "estate", "zoning", "commercial", "local", "vc",
-    "investment", "regulatory", "fintech", "indie", "hacker", "launch", "conference",
-    "sponsor", "exhibitor", "clv", "resource", "allocation", "pipeline", "liability",
-    "marketplace", "testimonial", "video", "capture", "w9", "contract", "etsy",
-    "shopify", "amazon", "fba", "storage", "ad", "ebay", "offer", "strategy",
-    "return", "inventory", "discount", "funnel", "drop-off", "crm", "social", "media",
-    "engagement", "gap", "landing", "test", "bubble", "airtable", "webflow",
-    "make", "integromat", "notion", "figma", "zapier", "github", "actions", "cloud",
-    "function", "docker", "nginx", "substack", "ghost"
-])
-
-def extract_keywords(text):
-    """Extracts simple keywords from text, removing stop words."""
-    words = re.findall(r'\b\w+\b', text.lower())
-    return [word for word in words if word not in STOP_WORDS and len(word) > 2]
-
-def get_promising_themes(top_n=5):
-    """Analyzes high-rated ideas from DB and returns top keywords/themes."""
-    # Note: This DB call is synchronous
-    high_rated_ideas_data = state_manager.get_high_rated_ideas(limit=50)
-    if not high_rated_ideas_data:
-        return []
-
-    logging.info(f"Analyzing {len(high_rated_ideas_data)} high-rated ideas for trends...")
-    all_keywords = []
-    for item in high_rated_ideas_data:
-        all_keywords.extend(extract_keywords(item['name']))
-
-    if not all_keywords:
-        logging.warning("No meaningful keywords extracted from high-rated idea names.")
-        return []
-
-    keyword_counts = Counter(all_keywords)
-    promising_keywords = [kw for kw, count in keyword_counts.most_common(top_n)]
-    logging.info(f"Identified promising keywords/themes: {promising_keywords}")
-    return promising_keywords
-
-# --- Core Logic Functions ---
+# --- Core Logic Functions --- (generate_ideas, get_search_queries, research_idea, rate_idea)
+# These remain the same as they interact with api_clients and config
 
 async def generate_ideas(session, full_prompt):
-    """Generates a batch of SaaS ideas using the Gemini API via api_clients."""
+    """Generates a batch of SaaS ideas using the Gemini API via api_clients, using a provided prompt."""
     logging.info(f">>> Generating new SaaS ideas...")
     response_text = await api_clients.call_gemini_api_async(session, full_prompt)
 
@@ -94,12 +28,13 @@ async def generate_ideas(session, full_prompt):
         return []
 
     ideas = []
+    # Stricter parsing: expect numbered list
     for line in response_text.strip().split('\n'):
         line = line.strip()
         match = re.match(r"^\d+\.\s*(.*)", line)
         if match:
             idea_name = match.group(1).strip()
-            if 0 < len(idea_name) < 200:
+            if 0 < len(idea_name) < 200: # Basic validation
                 ideas.append(idea_name)
             else:
                 logging.warning(f"Ignoring potentially invalid idea name: '{idea_name}'")
@@ -315,12 +250,13 @@ async def main():
     async with aiohttp.ClientSession() as session:
         while run_count < config.MAX_RUNS:
             run_count += 1
-            batch_start_time = time.time() # Record start time for duration calculation
+            batch_start_time = time.time()
             logging.info(f"===== Starting Run {run_count}/{config.MAX_RUNS} =====")
 
             # --- Periodic Trend Analysis ---
             if run_count > 1 and (run_count - 1) % 5 == 0:
-                promising_themes = get_promising_themes(top_n=5)
+                # Use the new analysis function
+                promising_themes = analysis_utils.get_promising_themes(top_n=5)
 
             # --- Determine Generation Strategy (Explore/Exploit) ---
             explore = random.random() < config.EXPLORE_RATIO
@@ -340,7 +276,7 @@ async def main():
             # --- Positive Feedback (Exploit Phase) ---
             if not explore and promising_themes:
                 logging.info(f"Exploiting promising themes: {promising_themes}")
-                focus_prompt_part = "\n\nTry to generate ideas related to these promising themes if possible:\n"
+                focus_prompt_part = "\n\nTry to generate ideas related to these promising themes/phrases if possible:\n" # Updated wording
                 for theme in promising_themes:
                     focus_prompt_part += f"- {theme}\n"
                 generation_prompt += focus_prompt_part
@@ -391,11 +327,9 @@ async def main():
 
             logging.info(f"Attempting to process {len(ideas)} filtered ideas.")
             tasks = []
-            new_ideas_processed_in_batch = 0 # Counter for ping message
+            new_ideas_processed_in_batch = 0
             for idea in ideas:
                  if idea.lower() not in processed_ideas_set:
-                     # Pass the counter reference or use a shared object if needed,
-                     # but simpler to just count tasks created for the ping message
                      task = asyncio.create_task(process_single_idea(idea, processed_ideas_set, session, semaphore))
                      tasks.append(task)
                      new_ideas_processed_in_batch += 1
@@ -409,11 +343,10 @@ async def main():
                 await asyncio.gather(*tasks)
 
             batch_end_time = time.time()
-            batch_duration = batch_end_time - batch_start_time # Calculate duration
+            batch_duration = batch_end_time - batch_start_time
             logging.info(f"===== Finished Run {run_count}/{config.MAX_RUNS} in {batch_duration:.2f} seconds =====")
 
             # --- Uptime Kuma Ping ---
-            # Send ping with status message and duration metric
             status_message = f"Finished Run {run_count}/{config.MAX_RUNS}. Processed {new_ideas_processed_in_batch} new ideas."
             await api_clients.ping_uptime_kuma(session, message=status_message, ping_value=int(batch_duration))
             # -----------------------
@@ -430,16 +363,23 @@ if __name__ == "__main__":
     except ImportError: missing_libs.append("aiohttp")
     try: import dotenv
     except ImportError: missing_libs.append("python-dotenv")
-    try: import requests # Keep requests check as it might be used elsewhere or as fallback
+    try: import requests
     except ImportError: missing_libs.append("requests")
-    try: import sqlite3 # Check for sqlite3 (standard library but good practice)
-    except ImportError: missing_libs.append("sqlite3") # Should not happen
-    try: from collections import Counter # Check if Counter is available
-    except ImportError: missing_libs.append("collections.Counter") # Should not happen
+    try: import sqlite3
+    except ImportError: missing_libs.append("sqlite3")
+    try: from collections import Counter
+    except ImportError: missing_libs.append("collections.Counter")
+    try: import nltk # Check for NLTK
+    except ImportError: missing_libs.append("nltk")
+
 
     if missing_libs:
         print(f"Error: Missing required libraries: {', '.join(missing_libs)}")
-        print(f"Please install them using: pip install aiohttp python-dotenv requests")
+        print(f"Please install them using: pip install {' '.join(missing_libs)}")
+        # Add instruction for NLTK data if needed
+        if "nltk" in missing_libs:
+             print("Also, NLTK data might need to be downloaded. The script attempts this automatically,")
+             print("but if it fails, you might need to run python -m nltk.downloader punkt stopwords")
         sys.exit(1)
 
     try:
