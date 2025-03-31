@@ -134,22 +134,34 @@ async def call_google_search_api_async(session, query):
             await asyncio.sleep(delay)
     return None
 
-async def ping_uptime_kuma(session):
-    """Sends a heartbeat ping to the configured Uptime Kuma Push URL."""
-    if not config.UPTIME_KUMA_PUSH_URL or config.UPTIME_KUMA_PUSH_URL == "YOUR_PUSH_URL_HERE":
+async def ping_uptime_kuma(session, message="OK", ping_value=None):
+    """Sends a heartbeat ping with optional message and ping value to Uptime Kuma."""
+    base_url = config.UPTIME_KUMA_PUSH_URL
+    if not base_url or base_url == "YOUR_PUSH_URL_HERE":
         logging.debug("Uptime Kuma Push URL not configured. Skipping ping.")
         return
 
-    logging.debug(f"Pinging Uptime Kuma: {config.UPTIME_KUMA_PUSH_URL}")
+    # Construct URL with parameters
+    params = {"status": "up", "msg": message}
+    if ping_value is not None:
+        try:
+            # Ensure ping value is numeric for Kuma graph
+            params["ping"] = int(ping_value)
+        except (ValueError, TypeError):
+            logging.warning(f"Could not convert ping_value '{ping_value}' to integer for Uptime Kuma.")
+
+    # Use aiohttp's URL builder to handle parameters safely
+    url = aiohttp.helpers.build_url(base_url, params)
+
+    logging.debug(f"Pinging Uptime Kuma: {url}")
     try:
-        # Simple GET request, timeout is short as it should be fast
-        async with session.get(config.UPTIME_KUMA_PUSH_URL, timeout=10) as response:
-            # We generally don't need to check the response status for Kuma push,
-            # but logging errors is good.
+        async with session.get(url, timeout=10) as response:
             if response.status != 200:
-                 logging.warning(f"Uptime Kuma ping failed with status {response.status}")
+                 # Log the response body for debugging if needed
+                 response_text = await response.text()
+                 logging.warning(f"Uptime Kuma ping failed with status {response.status}. Response: {response_text[:200]}") # Log first 200 chars
             else:
-                 logging.info("Uptime Kuma ping successful.")
+                 logging.info(f"Uptime Kuma ping successful. Message: '{message}', Ping: {params.get('ping', 'N/A')}")
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         logging.error(f"Error pinging Uptime Kuma: {e}")
     # Do not retry pings aggressively, as the main loop will try again next batch.
