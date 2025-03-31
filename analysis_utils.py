@@ -9,14 +9,26 @@ from nltk.corpus import stopwords
 # Ensure necessary NLTK data is downloaded once
 try:
     nltk.data.find('tokenizers/punkt')
-except nltk.downloader.DownloadError:
-    logging.info("Downloading NLTK 'punkt' tokenizer data...")
-    nltk.download('punkt', quiet=True)
+    logging.debug("NLTK 'punkt' resource found.")
+except LookupError: # Correct exception type
+    logging.info("NLTK 'punkt' resource not found. Downloading...")
+    try:
+        nltk.download('punkt', quiet=True)
+        logging.info("Successfully downloaded NLTK 'punkt'.")
+    except Exception as download_exc:
+        logging.error(f"Failed to download NLTK 'punkt': {download_exc}. Please install manually.")
+        # Optionally raise error or exit if essential
 try:
     nltk.data.find('corpora/stopwords')
-except nltk.downloader.DownloadError:
-    logging.info("Downloading NLTK 'stopwords' data...")
-    nltk.download('stopwords', quiet=True)
+    logging.debug("NLTK 'stopwords' resource found.")
+except LookupError: # Correct exception type
+    logging.info("NLTK 'stopwords' resource not found. Downloading...")
+    try:
+        nltk.download('stopwords', quiet=True)
+        logging.info("Successfully downloaded NLTK 'stopwords'.")
+    except Exception as download_exc:
+        logging.error(f"Failed to download NLTK 'stopwords': {download_exc}. Please install manually.")
+        # Optionally raise error or exit if essential
 
 # --- Constants ---
 # Use NLTK's stopwords and add custom ones
