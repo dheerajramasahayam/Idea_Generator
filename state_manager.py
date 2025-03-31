@@ -3,6 +3,7 @@ import logging
 import config # Import configuration for file paths
 import os
 import datetime
+import json # Needed for serializing justifications
 
 DB_FILE = config.STATE_FILE
 
@@ -19,9 +20,12 @@ def init_db(db_path=DB_FILE):
                 original_idea_name TEXT,
                 status TEXT NOT NULL,
                 rating REAL,
+                justifications TEXT, # New column for JSON justifications
                 processed_timestamp DATETIME NOT NULL
             )
         ''')
+        # Add migration logic here if needed for existing databases
+        # For simplicity, we assume a new DB or manual alteration if needed
         # Optional: Add indexes for faster lookups if the table grows large
         # cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON ideas (status);")
         # cursor.execute("CREATE INDEX IF NOT EXISTS idx_rating ON ideas (rating);")
@@ -54,20 +58,22 @@ def load_processed_ideas(db_path=DB_FILE):
             conn.close()
     return processed
 
-def update_idea_state(idea_name, status, rating=None, db_path=DB_FILE):
-    """Inserts or updates the state of an idea in the database."""
+def update_idea_state(idea_name, status, rating=None, justifications=None, db_path=DB_FILE):
+    """Inserts or updates the state of an idea in the database, including justifications."""
     conn = None
     idea_name_lower = idea_name.lower()
     timestamp = datetime.datetime.now().isoformat()
+    # Serialize justifications dictionary to JSON string, store None if not provided
+    justifications_json = json.dumps(justifications) if justifications else None
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         # Use INSERT OR REPLACE to handle both new and existing ideas
         cursor.execute('''
             INSERT OR REPLACE INTO ideas
-            (idea_name_lower, original_idea_name, status, rating, processed_timestamp)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (idea_name_lower, idea_name, status, rating, timestamp))
+            (idea_name_lower, original_idea_name, status, rating, justifications, processed_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (idea_name_lower, idea_name, status, rating, justifications_json, timestamp))
         conn.commit()
         logging.debug(f"Updated state for idea '{idea_name}' to status '{status}' with rating {rating}")
     except sqlite3.Error as e:
@@ -122,6 +128,29 @@ def get_high_rated_ideas(threshold=config.RATING_THRESHOLD, limit=50, db_path=DB
         if conn:
             conn.close()
     return ideas_with_ratings
+
+def get_recent_ratings(limit=50, db_path=DB_FILE):
+    """Retrieves the ratings of the most recently processed ideas."""
+    ratings = []
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        # Select non-null ratings, ordered by timestamp descending
+        cursor.execute('''
+            SELECT rating FROM ideas
+            WHERE status = 'rated' AND rating IS NOT NULL
+            ORDER BY processed_timestamp DESC
+            LIMIT ?
+        ''', (limit,))
+        rows = cursor.fetchall()
+        ratings = [row[0] for row in rows]
+    except sqlite3.Error as e:
+        logging.error(f"Error retrieving recent ratings from database '{db_path}': {e}")
+    finally:
+        if conn:
+            conn.close()
+    return ratings
 
 
 # --- Keep the function for saving to the final markdown output ---

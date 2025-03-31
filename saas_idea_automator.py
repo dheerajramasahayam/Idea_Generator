@@ -7,16 +7,16 @@ import logging
 import re
 import sys
 import os
-# from collections import Counter # No longer needed here
-
 # Import modular components
 import config
 import api_clients
 import state_manager
-import analysis_utils # Import the new analysis module
+import analysis_utils # For N-gram analysis
 
-# --- Core Logic Functions --- (generate_ideas, get_search_queries, research_idea, rate_idea)
-# These remain the same as they interact with api_clients and config
+# --- Core Logic Functions ---
+# (generate_ideas, get_search_queries, research_idea, rate_idea, process_single_idea)
+# These functions remain the same as the previous version.
+# For brevity, they are omitted here but should be included in the actual file.
 
 async def generate_ideas(session, full_prompt):
     """Generates a batch of SaaS ideas using the Gemini API via api_clients, using a provided prompt."""
@@ -207,7 +207,7 @@ async def process_single_idea(idea_name, processed_ideas_set, session, semaphore
             logging.error(f"Unexpected error processing idea '{idea_name}': {e}", exc_info=True)
             status = "error"
         finally:
-            state_manager.update_idea_state(idea_name, status, rating)
+            state_manager.update_idea_state(idea_name, status, rating, justifications) # Pass justifications here
             processed_ideas_set.add(idea_lower)
 
             logging.info(f"--- Waiting {config.DELAY_BETWEEN_IDEAS} seconds before next idea ---")
@@ -245,7 +245,9 @@ async def main():
 
     run_count = 0
     semaphore = asyncio.Semaphore(config.MAX_CONCURRENT_TASKS)
-    promising_themes = [] # Store promising themes across runs
+    promising_themes = []
+    current_explore_ratio = config.EXPLORE_RATIO # Initialize explore ratio
+    recent_ratings_window = 50 # How many recent ratings to consider for adaptation
 
     async with aiohttp.ClientSession() as session:
         while run_count < config.MAX_RUNS:
@@ -253,13 +255,39 @@ async def main():
             batch_start_time = time.time()
             logging.info(f"===== Starting Run {run_count}/{config.MAX_RUNS} =====")
 
+            # --- Adaptive Explore/Exploit Ratio Adjustment ---
+            if run_count > 1: # Don't adjust on the very first run
+                recent_ratings = state_manager.get_recent_ratings(limit=recent_ratings_window)
+                if len(recent_ratings) >= 10: # Only adjust if we have a reasonable sample size
+                    success_count = sum(1 for r in recent_ratings if r >= config.RATING_THRESHOLD)
+                    success_rate = success_count / len(recent_ratings)
+                    logging.info(f"Recent success rate ({len(recent_ratings)} ideas): {success_rate:.2%}")
+
+                    adjustment_step = 0.02
+                    min_explore = 0.05
+                    max_explore = 0.50
+                    target_success_rate_upper = 0.15 # If higher than this, decrease exploration
+                    target_success_rate_lower = 0.05 # If lower than this, increase exploration
+
+                    if success_rate > target_success_rate_upper:
+                        current_explore_ratio = max(min_explore, current_explore_ratio - adjustment_step)
+                        logging.info(f"Success rate high, decreasing explore ratio to {current_explore_ratio:.2f}")
+                    elif success_rate < target_success_rate_lower:
+                        current_explore_ratio = min(max_explore, current_explore_ratio + adjustment_step)
+                        logging.info(f"Success rate low, increasing explore ratio to {current_explore_ratio:.2f}")
+                    else:
+                         logging.info(f"Success rate stable, keeping explore ratio at {current_explore_ratio:.2f}")
+                else:
+                    logging.info("Not enough recent ratings to adjust explore ratio yet.")
+
+
             # --- Periodic Trend Analysis ---
-            if run_count > 1 and (run_count - 1) % 5 == 0:
-                # Use the new analysis function
+            if run_count > 1 and (run_count - 1) % 5 == 0: # Run every 5 runs after the first
+                # Use the analysis function from analysis_utils
                 promising_themes = analysis_utils.get_promising_themes(top_n=5)
 
             # --- Determine Generation Strategy (Explore/Exploit) ---
-            explore = random.random() < config.EXPLORE_RATIO
+            explore = random.random() < current_explore_ratio # Use the potentially adjusted ratio
             generation_prompt = config.IDEA_GENERATION_PROMPT_TEMPLATE.format(num_ideas=config.IDEAS_PER_BATCH)
 
             # --- Negative Feedback ---
@@ -271,19 +299,18 @@ async def main():
                 for avoid_idea in low_rated_ideas:
                     avoid_prompt_part += f"- {avoid_idea}\n"
                 generation_prompt += avoid_prompt_part
-            # Add fallback using random processed ideas if needed (optional)
 
             # --- Positive Feedback (Exploit Phase) ---
             if not explore and promising_themes:
                 logging.info(f"Exploiting promising themes: {promising_themes}")
-                focus_prompt_part = "\n\nTry to generate ideas related to these promising themes/phrases if possible:\n" # Updated wording
+                focus_prompt_part = "\n\nTry to generate ideas related to these promising themes/phrases if possible:\n"
                 for theme in promising_themes:
                     focus_prompt_part += f"- {theme}\n"
                 generation_prompt += focus_prompt_part
             elif explore:
                  logging.info("Exploring with broader prompt.")
             else:
-                 logging.info("No promising themes yet, using standard prompt.")
+                 logging.info("No promising themes yet or exploring, using standard prompt.")
 
 
             # --- Generate Ideas ---
@@ -367,7 +394,7 @@ if __name__ == "__main__":
     except ImportError: missing_libs.append("requests")
     try: import sqlite3
     except ImportError: missing_libs.append("sqlite3")
-    try: from collections import Counter
+    try: from collections import Counter # Check if Counter is available
     except ImportError: missing_libs.append("collections.Counter")
     try: import nltk # Check for NLTK
     except ImportError: missing_libs.append("nltk")
