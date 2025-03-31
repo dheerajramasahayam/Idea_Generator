@@ -64,9 +64,33 @@ async def call_gemini_api_async(session, prompt):
             if attempt + 1 == max_retries:
                 logging.error("Max retries reached for Gemini API.")
                 return None
-            delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
-            logging.info(f"Retrying Gemini API in {delay:.2f} seconds...")
-            await asyncio.sleep(delay)
+
+            # --- Smarter Retry Delay for 429 ---
+            delay = base_delay * (2 ** attempt) # Default exponential backoff
+            if isinstance(e, aiohttp.ClientResponseError) and e.status == 429:
+                try:
+                    # Attempt to parse retryDelay from the error message/body
+                    error_data = json.loads(e.message) # Assuming e.message contains the JSON string
+                    if isinstance(error_data, dict) and 'error' in error_data and 'details' in error_data['error']:
+                        for detail in error_data['error']['details']:
+                             if isinstance(detail, dict) and detail.get('@type') == 'type.googleapis.com/google.rpc.RetryInfo':
+                                 retry_delay_str = detail.get('retryDelay')
+                                 if isinstance(retry_delay_str, str) and retry_delay_str.endswith('s'):
+                                     try:
+                                         # Extract seconds and use it, add small buffer
+                                         delay_seconds = int(retry_delay_str[:-1])
+                                         delay = max(delay_seconds, base_delay) # Use API delay if longer than base
+                                         logging.info(f"Using API suggested retry delay: {delay}s")
+                                         break # Found the delay, exit inner loop
+                                     except ValueError:
+                                         logging.warning(f"Could not parse seconds from retryDelay: {retry_delay_str}")
+                except (json.JSONDecodeError, KeyError, IndexError, TypeError) as parse_error:
+                     logging.warning(f"Could not parse RetryInfo from 429 error details: {parse_error}. Falling back to exponential backoff.")
+            # --- End Smarter Retry Delay ---
+
+            delay_with_jitter = delay + random.uniform(0, 1)
+            logging.info(f"Retrying Gemini API in {delay_with_jitter:.2f} seconds...")
+            await asyncio.sleep(delay_with_jitter)
     return None
 
 async def call_google_search_api_async(session, query):
