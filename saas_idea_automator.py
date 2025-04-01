@@ -16,7 +16,6 @@ import analysis_utils # For N-gram analysis
 # --- Core Logic Functions ---
 # (generate_ideas, get_search_queries, research_idea, rate_idea, process_single_idea)
 # These functions remain the same as the previous version.
-# For brevity, they are omitted here but should be included in the actual file.
 
 async def generate_ideas(session, full_prompt):
     """Generates a batch of SaaS ideas using the Gemini API via api_clients, using a provided prompt."""
@@ -207,7 +206,7 @@ async def process_single_idea(idea_name, processed_ideas_set, session, semaphore
             logging.error(f"Unexpected error processing idea '{idea_name}': {e}", exc_info=True)
             status = "error"
         finally:
-            state_manager.update_idea_state(idea_name, status, rating, justifications) # Pass justifications here
+            state_manager.update_idea_state(idea_name, status, rating, justifications)
             processed_ideas_set.add(idea_lower)
 
             logging.info(f"--- Waiting {config.DELAY_BETWEEN_IDEAS} seconds before next idea ---")
@@ -236,7 +235,7 @@ async def main():
     if not os.path.exists(config.OUTPUT_FILE):
          try:
              with open(config.OUTPUT_FILE, 'w', encoding='utf-8') as f:
-                  f.write("# AI-Rated SaaS Ideas (Weighted Score >= 7.5)\n\n")
+                  f.write("# AI-Rated SaaS Ideas (Weighted Score >= 9.0)\n\n") # Updated threshold in header
                   f.write("Ideas are rated based on Need, WillingnessToPay, Competition, Monetization, Feasibility.\n")
                   f.write("Justifications are AI-generated based *only* on limited web search summaries.\n\n")
          except Exception as e:
@@ -248,6 +247,12 @@ async def main():
     promising_themes = []
     current_explore_ratio = config.EXPLORE_RATIO # Initialize explore ratio
     recent_ratings_window = 50 # How many recent ratings to consider for adaptation
+    # Define parameters for adaptive logic
+    adjustment_step = 0.02
+    min_explore = 0.05
+    max_explore = 0.50
+    target_success_rate_upper = 0.15 # If higher than this, decrease exploration
+    target_success_rate_lower = 0.05 # If lower than this, increase exploration
 
     async with aiohttp.ClientSession() as session:
         while run_count < config.MAX_RUNS:
@@ -257,17 +262,12 @@ async def main():
 
             # --- Adaptive Explore/Exploit Ratio Adjustment ---
             if run_count > 1: # Don't adjust on the very first run
+                # Note: DB call is synchronous
                 recent_ratings = state_manager.get_recent_ratings(limit=recent_ratings_window)
                 if len(recent_ratings) >= 10: # Only adjust if we have a reasonable sample size
                     success_count = sum(1 for r in recent_ratings if r >= config.RATING_THRESHOLD)
                     success_rate = success_count / len(recent_ratings)
                     logging.info(f"Recent success rate ({len(recent_ratings)} ideas): {success_rate:.2%}")
-
-                    adjustment_step = 0.02
-                    min_explore = 0.05
-                    max_explore = 0.50
-                    target_success_rate_upper = 0.15 # If higher than this, decrease exploration
-                    target_success_rate_lower = 0.05 # If lower than this, increase exploration
 
                     if success_rate > target_success_rate_upper:
                         current_explore_ratio = max(min_explore, current_explore_ratio - adjustment_step)
@@ -278,12 +278,13 @@ async def main():
                     else:
                          logging.info(f"Success rate stable, keeping explore ratio at {current_explore_ratio:.2f}")
                 else:
-                    logging.info("Not enough recent ratings to adjust explore ratio yet.")
+                    logging.info(f"Not enough recent ratings ({len(recent_ratings)}/{recent_ratings_window}) to adjust explore ratio yet.")
+            else:
+                 logging.info(f"Keeping initial explore ratio: {current_explore_ratio:.2f}")
 
 
             # --- Periodic Trend Analysis ---
             if run_count > 1 and (run_count - 1) % 5 == 0: # Run every 5 runs after the first
-                # Use the analysis function from analysis_utils
                 promising_themes = analysis_utils.get_promising_themes(top_n=5)
 
             # --- Determine Generation Strategy (Explore/Exploit) ---
@@ -394,7 +395,7 @@ if __name__ == "__main__":
     except ImportError: missing_libs.append("requests")
     try: import sqlite3
     except ImportError: missing_libs.append("sqlite3")
-    try: from collections import Counter # Check if Counter is available
+    try: from collections import Counter
     except ImportError: missing_libs.append("collections.Counter")
     try: import nltk # Check for NLTK
     except ImportError: missing_libs.append("nltk")
