@@ -6,21 +6,18 @@ from nltk.util import ngrams
 from nltk.corpus import stopwords
 from sentence_transformers import SentenceTransformer, util
 import numpy as np
+import torch # Import torch
 import config # For embedding model config
 
 # --- Global Variable for Embedding Model ---
-# Load the model only once when the module is imported
-embedding_model = None # Initialize as None
+embedding_model = None
 try:
-    # --- Force CPU Usage ---
-    # Explicitly set device to 'cpu' to avoid potential MPS issues on macOS
     device_to_use = 'cpu'
     logging.info(f"Loading sentence transformer model: {config.EMBEDDING_MODEL} onto device: {device_to_use}...")
     embedding_model = SentenceTransformer(config.EMBEDDING_MODEL, device=device_to_use)
     logging.info("Sentence transformer model loaded successfully.")
 except Exception as e:
     logging.error(f"Failed to load sentence transformer model '{config.EMBEDDING_MODEL}': {e}", exc_info=True)
-    # embedding_model remains None
 
 # --- NLTK Data Download ---
 try:
@@ -141,10 +138,24 @@ def check_similarity(candidate_embedding, existing_embeddings, threshold):
     try:
         candidate_tensor = np.array([candidate_embedding])
         existing_tensors = np.array(existing_embeddings)
+        if candidate_tensor.ndim == 1: candidate_tensor = candidate_tensor[np.newaxis, :]
+        if existing_tensors.ndim == 1: existing_tensors = existing_tensors[np.newaxis, :]
+        if existing_tensors.shape[0] == 0: return False
+
         cosine_scores = util.cos_sim(candidate_tensor, existing_tensors)[0]
-        max_similarity = np.max(cosine_scores) if cosine_scores.size > 0 else 0
+
+        max_similarity = 0.0
+        # Check if the result is a non-empty numpy array or torch tensor
+        if isinstance(cosine_scores, np.ndarray) and cosine_scores.size > 0:
+             max_similarity = np.max(cosine_scores)
+        elif torch is not None and isinstance(cosine_scores, torch.Tensor) and cosine_scores.numel() > 0:
+             max_similarity = torch.max(cosine_scores).item()
+        elif isinstance(cosine_scores, (list, tuple)) and len(cosine_scores) > 0:
+             # Fallback if it's somehow a list/tuple of scores
+             max_similarity = max(cosine_scores)
+
         logging.debug(f"Max similarity to existing low-rated ideas: {max_similarity:.4f}")
         return max_similarity > threshold
     except Exception as e:
         logging.error(f"Error checking similarity: {e}", exc_info=True)
-        return False
+        return False # Err on the side of caution

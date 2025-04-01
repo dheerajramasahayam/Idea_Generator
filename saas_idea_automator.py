@@ -20,8 +20,6 @@ import sentence_transformers
 import numpy # Check numpy as well
 
 # --- Core Logic Functions ---
-# (generate_ideas, get_search_queries, research_idea, rate_idea, process_single_idea)
-# Assume these are present and correct from the previous version
 
 async def generate_ideas(session, full_prompt):
     """Generates a batch of SaaS ideas using the Gemini API via api_clients."""
@@ -103,13 +101,45 @@ async def research_idea(session, idea_name):
     logging.info(f"Research complete for '{idea_name}'. Summary length: {len(research_summary)}")
     return research_summary.strip()
 
-async def rate_idea(session, idea_name, research_summary):
-    """Rates an idea based on research using the Gemini API asynchronously."""
-    logging.info(f">>> Rating idea: '{idea_name}'...")
-    if not research_summary: return None, None
-    prompt = config.RATING_PROMPT_TEMPLATE.format(idea_name=idea_name, research_summary=research_summary)
+async def extract_facts_for_rating(session, idea_name, research_summary):
+    """Uses Gemini to extract key facts relevant to rating criteria."""
+    logging.info(f">>> Extracting facts for: '{idea_name}'...")
+    if not research_summary:
+        logging.warning("Cannot extract facts, empty research summary.")
+        return None
+
+    prompt = config.FACT_EXTRACTION_PROMPT_TEMPLATE.format(
+        idea_name=idea_name,
+        research_summary=research_summary
+    )
+    extracted_facts = await api_clients.call_gemini_api_async(session, prompt)
+    if not extracted_facts:
+        logging.warning(f"Fact extraction failed for '{idea_name}'.")
+        return None
+
+    logging.info(f"Successfully extracted facts for '{idea_name}'.")
+    logging.debug(f"Extracted Facts:\n{extracted_facts}") # Log extracted facts at debug level
+    return extracted_facts
+
+async def rate_idea(session, idea_name, rating_context):
+    """
+    Rates an idea based on provided context (extracted facts or raw summary) using Gemini.
+    Parses individual criteria scores and justifications, calculates weighted average.
+    Returns a tuple: (weighted_score, justifications_dict) or (None, None) on failure.
+    """
+    logging.info(f">>> Rating idea: '{idea_name}' using provided context...")
+    if not rating_context:
+        logging.warning("Skipping rating due to empty context.")
+        return None, None
+
+    prompt = config.RATING_PROMPT_TEMPLATE.format(
+        idea_name=idea_name,
+        rating_context=rating_context # Use the context (facts or summary)
+    )
     response_text = await api_clients.call_gemini_api_async(session, prompt)
-    if not response_text: return None, None
+    if not response_text:
+        logging.warning(f"Failed to get rating breakdown from Gemini for '{idea_name}'.")
+        return None, None
 
     scores, justifications = {}, {}
     expected_keys = ["need", "willingnesstopay", "competition", "monetization", "feasibility"]
@@ -140,7 +170,7 @@ async def rate_idea(session, idea_name, research_summary):
 
 async def process_single_idea(idea_name, idea_embedding, processed_ideas_set, session, semaphore, batch_stats):
     """
-    Async function to research, rate, and save state (including embedding) for a single idea.
+    Async function to research, extract facts, rate, and save state for a single idea.
     Updates batch_stats dictionary.
     """
     async with semaphore:
@@ -151,9 +181,20 @@ async def process_single_idea(idea_name, idea_embedding, processed_ideas_set, se
         try:
             status = "researching"
             summary = await research_idea(session, idea_name)
-            await asyncio.sleep(random.uniform(0.5, 1.5))
+            await asyncio.sleep(random.uniform(0.5, 1.0)) # Shorter delay before fact extraction
+
+            status = "fact_extraction"
+            extracted_facts = await extract_facts_for_rating(session, idea_name, summary)
+            # Use extracted facts if successful, otherwise fallback to raw summary for rating
+            rating_context = extracted_facts if extracted_facts else summary
+            if not rating_context: # If summary was also empty
+                 raise ValueError("Cannot rate idea, both research summary and fact extraction are empty.")
+
+            await asyncio.sleep(random.uniform(0.5, 1.0)) # Shorter delay before rating
+
             status = "rating"
-            rating, justifications = await rate_idea(session, idea_name, summary)
+            rating, justifications = await rate_idea(session, idea_name, rating_context) # Pass context
+
             if rating is not None:
                 status = "rated"
                 if rating >= config.RATING_THRESHOLD:
@@ -172,7 +213,7 @@ async def process_single_idea(idea_name, idea_embedding, processed_ideas_set, se
 
 # --- Main Execution ---
 async def main():
-    # Logging setup happens via config import now
+    config.setup_logging()
     logging.info("Starting SaaS Idea Automator...")
     try: state_manager.init_db()
     except Exception as e: logging.critical(f"DB Init Failed: {e}"); sys.exit(1)
@@ -224,21 +265,28 @@ async def main():
 
             # --- Semantic Negative Feedback Filter ---
             ideas_after_neg_filter = []
+            candidate_embeddings_dict = {} # Store embeddings for ideas that pass
             if low_rated_embeddings:
                 logging.info("Applying semantic negative feedback filter...")
-                candidate_embeddings = analysis_utils.generate_embeddings(initial_ideas)
-                if candidate_embeddings and len(candidate_embeddings) == len(initial_ideas):
-                    for idea, embedding in zip(initial_ideas, candidate_embeddings):
+                candidate_embeddings_list = analysis_utils.generate_embeddings(initial_ideas)
+                if candidate_embeddings_list and len(candidate_embeddings_list) == len(initial_ideas):
+                    for idea, embedding in zip(initial_ideas, candidate_embeddings_list):
                         if not analysis_utils.check_similarity(embedding, low_rated_embeddings, config.NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD):
                             ideas_after_neg_filter.append(idea)
+                            candidate_embeddings_dict[idea] = embedding # Store embedding for later
                         else: logging.info(f"Filtered out '{idea}' due to similarity with low-rated ideas.")
                     logging.info(f"{len(ideas_after_neg_filter)} ideas remaining after semantic negative filter.")
                 else:
                     logging.warning("Could not generate embeddings for candidates. Skipping semantic filter.")
                     ideas_after_neg_filter = initial_ideas
+                    # Need to generate embeddings later if skipping filter but still want to store them
+                    candidate_embeddings_dict = {idea: None for idea in initial_ideas}
             else:
-                 logging.info("No low-rated embeddings found in DB yet. Skipping semantic filter.")
+                 logging.info("No low-rated embeddings found. Skipping semantic filter.")
                  ideas_after_neg_filter = initial_ideas
+                 # Need to generate embeddings later if skipping filter but still want to store them
+                 candidate_embeddings_dict = {idea: None for idea in initial_ideas}
+
 
             # --- Self-Critique Step ---
             ideas = []
@@ -263,12 +311,28 @@ async def main():
             # --- Process Final Ideas ---
             if not ideas: logging.warning("No ideas to process."); await asyncio.sleep(10); continue
             logging.info(f"Attempting to process {len(ideas)} final ideas.")
-            final_idea_embeddings = analysis_utils.generate_embeddings(ideas)
-            if not final_idea_embeddings or len(final_idea_embeddings) != len(ideas):
-                 logging.error("Failed to generate embeddings for final ideas list. Proceeding without storing embeddings for this batch.")
-                 final_idea_embeddings = [None] * len(ideas)
 
-            tasks = [asyncio.create_task(process_single_idea(idea, final_idea_embeddings[i], processed_ideas_set, session, semaphore, batch_stats)) for i, idea in enumerate(ideas) if idea.lower() not in processed_ideas_set]
+            # Regenerate embeddings if they weren't generated during semantic filtering
+            final_idea_embeddings_map = {}
+            ideas_to_embed = []
+            for idea in ideas:
+                 if idea in candidate_embeddings_dict and candidate_embeddings_dict[idea] is not None:
+                      final_idea_embeddings_map[idea] = candidate_embeddings_dict[idea]
+                 else:
+                      ideas_to_embed.append(idea)
+
+            if ideas_to_embed:
+                 logging.info(f"Generating embeddings for {len(ideas_to_embed)} ideas that missed initial embedding.")
+                 new_embeddings = analysis_utils.generate_embeddings(ideas_to_embed)
+                 if new_embeddings and len(new_embeddings) == len(ideas_to_embed):
+                      for idea, embedding in zip(ideas_to_embed, new_embeddings):
+                           final_idea_embeddings_map[idea] = embedding
+                 else:
+                      logging.error("Failed to generate embeddings for some final ideas. They will be stored without embeddings.")
+                      for idea in ideas_to_embed:
+                           final_idea_embeddings_map[idea] = None # Ensure all ideas have an entry
+
+            tasks = [asyncio.create_task(process_single_idea(idea, final_idea_embeddings_map.get(idea), processed_ideas_set, session, semaphore, batch_stats)) for idea in ideas if idea.lower() not in processed_ideas_set]
 
             if not tasks: logging.warning("No new ideas to process after filtering processed.");
             else: logging.info(f"Created {len(tasks)} tasks for new ideas."); await asyncio.gather(*tasks)
@@ -278,23 +342,14 @@ async def main():
             batch_duration = batch_end_time - batch_start_time
             logging.info(f"===== Finished Run {run_count}/{config.MAX_RUNS} in {batch_duration:.2f} seconds =====")
 
-            # Send email summary ONLY if ideas were saved OR errors occurred in this batch
             if config.ENABLE_EMAIL_NOTIFICATIONS and (batch_stats['saved_ideas'] or batch_stats['errors'] > 0):
                 email_subject = f"SaaS Automator Run {run_count} Summary"
-                email_body = f"Run {run_count} completed in {batch_duration:.2f}s.\n"
-                email_body += f"Processed {batch_stats['processed']} new ideas.\n"
-                email_body += f"Encountered {batch_stats['errors']} errors during processing.\n"
-                if batch_stats['saved_ideas']:
-                    email_body += f"\nSaved {len(batch_stats['saved_ideas'])} high-scoring ideas (Threshold: {config.RATING_THRESHOLD}):\n"
-                    for saved_idea in batch_stats['saved_ideas']:
-                        email_body += f"- {saved_idea}\n"
-                else:
-                    email_body += "\nNo new ideas met the rating threshold in this run.\n"
+                email_body = f"Run {run_count} completed in {batch_duration:.2f}s.\nProcessed: {batch_stats['processed']}. Errors: {batch_stats['errors']}.\n"
+                if batch_stats['saved_ideas']: email_body += f"Saved {len(batch_stats['saved_ideas'])} ideas (Threshold: {config.RATING_THRESHOLD}):\n" + "\n".join([f"- {s}" for s in batch_stats['saved_ideas']])
+                else: email_body += "No new ideas met threshold."
                 notifications.send_summary_email(email_subject, email_body)
-            elif config.ENABLE_EMAIL_NOTIFICATIONS:
-                 logging.info("No high-scoring ideas found or errors encountered, skipping summary email for this run.")
+            elif config.ENABLE_EMAIL_NOTIFICATIONS: logging.info("Skipping summary email: No saved ideas or errors.")
 
-            # Send Uptime Kuma Ping regardless
             status_message = f"Finished Run {run_count}. Processed {batch_stats['processed']}. Saved: {len(batch_stats['saved_ideas'])}. Errors: {batch_stats['errors']}."
             await api_clients.ping_uptime_kuma(session, message=status_message, ping_value=int(batch_duration))
 
@@ -303,42 +358,30 @@ async def main():
     logging.info("SaaS Idea Automator finished.")
 
 if __name__ == "__main__":
-    # Setup logging first thing
     config.setup_logging()
     main_success = False
     try:
-        # Validate essential config needed even for failure email
         if config.ENABLE_EMAIL_NOTIFICATIONS:
              if not all([config.SMTP_SERVER, config.SMTP_PORT, config.SMTP_USER, config.SMTP_PASSWORD, config.EMAIL_SENDER, config.EMAIL_RECIPIENT]):
-                  logging.warning("Email notifications enabled but some SMTP settings missing. Failure emails might not send.")
-
-        # Check libraries needed for main execution - simplified check
+                  logging.warning("Email notifications enabled but SMTP settings missing.")
         try:
             import aiohttp, dotenv, requests, sqlite3, nltk, sentence_transformers, numpy
-            logging.debug("All required libraries seem to be installed.")
+            logging.debug("All required libraries seem installed.")
         except ImportError as import_err:
              logging.error(f"Missing required library: {import_err.name}")
-             logging.error(f"Please install all dependencies using: pip install -r requirements.txt")
-             if import_err.name == "nltk":
-                  logging.error("Also ensure NLTK data is downloaded (script attempts this, or run: python -m nltk.downloader punkt stopwords)")
+             logging.error(f"Install dependencies: pip install -r requirements.txt")
+             if import_err.name == "nltk": logging.error("Also run: python -m nltk.downloader punkt stopwords")
              sys.exit(1)
-
-        # Run the main async function
         asyncio.run(main())
-        main_success = True # Mark success if main completes without exception
-
-    except KeyboardInterrupt:
-        logging.warning("Script interrupted by user.")
-        # Optionally send email on manual interruption (less critical)
+        main_success = True
+    except KeyboardInterrupt: logging.warning("Script interrupted by user.")
     except Exception as e:
-        logging.critical(f"Unhandled critical exception in main execution block: {e}", exc_info=True)
-        # Attempt to send failure email only if main execution failed
+        logging.critical(f"Unhandled critical exception: {e}", exc_info=True)
         if not main_success and config.ENABLE_EMAIL_NOTIFICATIONS and all([config.SMTP_SERVER, config.SMTP_PORT, config.SMTP_USER, config.SMTP_PASSWORD, config.EMAIL_SENDER, config.EMAIL_RECIPIENT]):
              try:
                   error_traceback = traceback.format_exc()
                   fail_subject = "SaaS Automator CRITICAL FAILURE"
-                  fail_body = f"The script encountered a critical unhandled exception and stopped.\n\nError:\n{e}\n\nTraceback:\n{error_traceback}"
+                  fail_body = f"Script stopped due to unhandled exception.\n\nError:\n{e}\n\nTraceback:\n{error_traceback}"
                   notifications.send_summary_email(fail_subject, fail_body)
-             except Exception as email_fail_exc:
-                  logging.error(f"Failed to send critical failure email: {email_fail_exc}")
-        sys.exit(1) # Exit with error code after logging/attempting email
+             except Exception as email_fail_exc: logging.error(f"Failed to send critical failure email: {email_fail_exc}")
+        sys.exit(1)
