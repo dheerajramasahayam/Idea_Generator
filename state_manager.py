@@ -9,32 +9,55 @@ DB_FILE = config.STATE_FILE
 
 def init_db(db_path=DB_FILE):
     """Initializes the SQLite database and creates the ideas table if it doesn't exist."""
+    conn = None # Ensure conn is defined in the outer scope
     try:
+        logging.info(f"Attempting to initialize database: {db_path}")
         # Ensure the directory exists
-        os.makedirs(os.path.dirname(db_path) or '.', exist_ok=True)
+        db_dir = os.path.dirname(db_path) or '.'
+        os.makedirs(db_dir, exist_ok=True)
+        logging.debug(f"Ensured directory exists: {db_dir}")
+
+        logging.debug(f"Connecting to database: {db_path}")
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute('''
+        logging.info("Database connection successful. Preparing to execute CREATE TABLE IF NOT EXISTS...")
+        # Define the SQL statement clearly
+        create_table_sql = """
             CREATE TABLE IF NOT EXISTS ideas (
                 idea_name_lower TEXT PRIMARY KEY,
                 original_idea_name TEXT,
                 status TEXT NOT NULL,
                 rating REAL,
-                justifications TEXT, # New column for JSON justifications
+                justifications TEXT,
                 processed_timestamp DATETIME NOT NULL
-            )
-        ''')
-        # Add migration logic here if needed for existing databases
-        # For simplicity, we assume a new DB or manual alteration if needed
+            );
+        """
+        logging.debug(f"Executing SQL: {create_table_sql.strip()}")
+        cursor.execute(create_table_sql) # Re-enabled CREATE TABLE
+        logging.info("Executed CREATE TABLE IF NOT EXISTS statement successfully.")
+
         # Optional: Add indexes for faster lookups if the table grows large
+        # logging.debug("Checking/creating indexes...")
         # cursor.execute("CREATE INDEX IF NOT EXISTS idx_status ON ideas (status);")
         # cursor.execute("CREATE INDEX IF NOT EXISTS idx_rating ON ideas (rating);")
+        # logging.debug("Indexes checked/created.")
+
         conn.commit()
-        conn.close()
         logging.info(f"Database '{db_path}' initialized successfully.")
     except sqlite3.Error as e:
-        logging.error(f"Error initializing database '{db_path}': {e}")
+        logging.error(f"SQLite error during database initialization '{db_path}': {e}")
+        # Log the SQL statement if the error occurred during execute
+        if 'create_table_sql' in locals():
+             logging.error(f"Failed SQL was likely related to: {create_table_sql.strip()}")
         raise # Re-raise the exception to potentially stop the main script
+    except Exception as e: # Catch other potential errors like permission issues
+        logging.error(f"Non-SQLite error during database initialization '{db_path}': {e}")
+        raise
+    finally:
+        if conn:
+            conn.close()
+            logging.debug(f"Database connection closed for '{db_path}'.")
+
 
 def load_processed_ideas(db_path=DB_FILE):
     """Loads the set of already processed idea names (lowercase) from the database."""
@@ -47,10 +70,16 @@ def load_processed_ideas(db_path=DB_FILE):
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT idea_name_lower FROM ideas")
-        rows = cursor.fetchall()
-        processed = {row[0] for row in rows}
-        logging.info(f"Loaded {len(processed)} previously processed ideas from '{db_path}'.")
+        # Check if table exists before querying, handle case where init failed partially
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ideas';")
+        if cursor.fetchone():
+            cursor.execute("SELECT idea_name_lower FROM ideas")
+            rows = cursor.fetchall()
+            processed = {row[0] for row in rows}
+            logging.info(f"Loaded {len(processed)} previously processed ideas from '{db_path}'.")
+        else:
+            logging.warning(f"Table 'ideas' not found in database '{db_path}'. Assuming no processed ideas.")
+
     except sqlite3.Error as e:
         logging.error(f"Error reading processed ideas state from database '{db_path}': {e}")
     finally:
@@ -77,6 +106,7 @@ def update_idea_state(idea_name, status, rating=None, justifications=None, db_pa
         conn.commit()
         logging.debug(f"Updated state for idea '{idea_name}' to status '{status}' with rating {rating}")
     except sqlite3.Error as e:
+        # Log error but allow script to potentially continue processing other ideas
         logging.error(f"Error updating state for idea '{idea_name}' in database '{db_path}': {e}")
     finally:
         if conn:
@@ -91,15 +121,19 @@ def get_low_rated_ideas(threshold=4.0, limit=10, db_path=DB_FILE):
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        # Select original name for better prompts, order by timestamp descending to get recent ones
-        cursor.execute('''
-            SELECT original_idea_name FROM ideas
-            WHERE status = 'rated' AND rating IS NOT NULL AND rating < ?
-            ORDER BY processed_timestamp DESC
-            LIMIT ?
-        ''', (threshold, limit))
-        rows = cursor.fetchall()
-        ideas = [row[0] for row in rows]
+        # Check if table exists first
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ideas';")
+        if cursor.fetchone():
+            cursor.execute('''
+                SELECT original_idea_name FROM ideas
+                WHERE status = 'rated' AND rating IS NOT NULL AND rating < ?
+                ORDER BY processed_timestamp DESC
+                LIMIT ?
+            ''', (threshold, limit))
+            rows = cursor.fetchall()
+            ideas = [row[0] for row in rows]
+        else:
+            logging.warning("Cannot get low-rated ideas: 'ideas' table not found.")
     except sqlite3.Error as e:
         logging.error(f"Error retrieving low-rated ideas from database '{db_path}': {e}")
     finally:
@@ -114,14 +148,19 @@ def get_high_rated_ideas(threshold=config.RATING_THRESHOLD, limit=50, db_path=DB
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute('''
-            SELECT original_idea_name, rating FROM ideas
-            WHERE status = 'rated' AND rating IS NOT NULL AND rating >= ?
-            ORDER BY rating DESC
-            LIMIT ?
-        ''', (threshold, limit))
-        rows = cursor.fetchall()
-        ideas_with_ratings = [{"name": row[0], "rating": row[1]} for row in rows]
+        # Check if table exists first
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ideas';")
+        if cursor.fetchone():
+            cursor.execute('''
+                SELECT original_idea_name, rating FROM ideas
+                WHERE status = 'rated' AND rating IS NOT NULL AND rating >= ?
+                ORDER BY rating DESC
+                LIMIT ?
+            ''', (threshold, limit))
+            rows = cursor.fetchall()
+            ideas_with_ratings = [{"name": row[0], "rating": row[1]} for row in rows]
+        else:
+            logging.warning("Cannot get high-rated ideas: 'ideas' table not found.")
     except sqlite3.Error as e:
         logging.error(f"Error retrieving high-rated ideas from database '{db_path}': {e}")
     finally:
@@ -136,15 +175,19 @@ def get_recent_ratings(limit=50, db_path=DB_FILE):
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        # Select non-null ratings, ordered by timestamp descending
-        cursor.execute('''
-            SELECT rating FROM ideas
-            WHERE status = 'rated' AND rating IS NOT NULL
-            ORDER BY processed_timestamp DESC
-            LIMIT ?
-        ''', (limit,))
-        rows = cursor.fetchall()
-        ratings = [row[0] for row in rows]
+        # Check if table exists first
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ideas';")
+        if cursor.fetchone():
+            cursor.execute('''
+                SELECT rating FROM ideas
+                WHERE status = 'rated' AND rating IS NOT NULL
+                ORDER BY processed_timestamp DESC
+                LIMIT ?
+            ''', (limit,))
+            rows = cursor.fetchall()
+            ratings = [row[0] for row in rows]
+        else:
+            logging.warning("Cannot get recent ratings: 'ideas' table not found.")
     except sqlite3.Error as e:
         logging.error(f"Error retrieving recent ratings from database '{db_path}': {e}")
     finally:
@@ -164,7 +207,7 @@ def save_rated_idea(idea_name, rating, justifications, filename=config.OUTPUT_FI
         # Ensure file exists with header if it's new
         if not os.path.exists(filename):
              with open(filename, 'w', encoding='utf-8') as f:
-                  f.write("# AI-Rated SaaS Ideas (Weighted Score >= 7.5)\n\n")
+                  f.write("# AI-Rated SaaS Ideas (Weighted Score >= 7.5)\n\n") # Note: Header threshold might need update if config changes
                   f.write("Ideas are rated based on Need, WillingnessToPay, Competition, Monetization, Feasibility.\n")
                   f.write("Justifications are AI-generated based *only* on limited web search summaries.\n\n")
 

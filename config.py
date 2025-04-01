@@ -21,7 +21,7 @@ try:
     DELAY_BETWEEN_IDEAS = int(os.environ.get("DELAY_BETWEEN_IDEAS", 5))
     MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", 1))
     MAX_SUMMARY_LENGTH = int(os.environ.get("MAX_SUMMARY_LENGTH", 2500)) # Increased
-    MAX_RUNS = int(os.environ.get("MAX_RUNS", 999999)) # Set high default for continuous running
+    MAX_RUNS = int(os.environ.get("MAX_RUNS", 1)) # Limit to 1 run for testing DB init fix
     WAIT_BETWEEN_BATCHES = int(os.environ.get("WAIT_BETWEEN_BATCHES", 10))
     EXPLORE_RATIO = float(os.environ.get("EXPLORE_RATIO", 0.2)) # 20% chance to explore (broad prompt)
 except ValueError as e:
@@ -32,7 +32,7 @@ except ValueError as e:
     DELAY_BETWEEN_IDEAS = 5
     MAX_CONCURRENT_TASKS = 1
     MAX_SUMMARY_LENGTH = 2500 # Increased
-    MAX_RUNS = 999999 # Set high default for continuous running
+    MAX_RUNS = 1 # Limit to 1 run for testing DB init fix
     WAIT_BETWEEN_BATCHES = 10
     EXPLORE_RATIO = 0.2 # Default explore ratio
 
