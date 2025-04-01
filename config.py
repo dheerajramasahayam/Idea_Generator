@@ -48,7 +48,7 @@ try:
     DELAY_BETWEEN_IDEAS = int(os.environ.get("DELAY_BETWEEN_IDEAS", 5))
     MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", 1))
     MAX_SUMMARY_LENGTH = int(os.environ.get("MAX_SUMMARY_LENGTH", 2500))
-    MAX_RUNS = int(os.environ.get("MAX_RUNS", 99999))
+    MAX_RUNS = int(os.environ.get("MAX_RUNS", 999999))
     WAIT_BETWEEN_BATCHES = int(os.environ.get("WAIT_BETWEEN_BATCHES", 10))
     EXPLORE_RATIO = float(os.environ.get("EXPLORE_RATIO", 0.2))
     SMTP_PORT = int(SMTP_PORT)
@@ -56,7 +56,7 @@ except ValueError as e:
     logging.error(f"Error parsing numeric config: {e}. Using defaults.")
     IDEAS_PER_BATCH = 10; RATING_THRESHOLD = 9.0; SEARCH_RESULTS_LIMIT = 10
     DELAY_BETWEEN_IDEAS = 5; MAX_CONCURRENT_TASKS = 1; MAX_SUMMARY_LENGTH = 2500
-    MAX_RUNS = 99999; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2
+    MAX_RUNS = 999999; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2
     SMTP_PORT = 587; NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = 0.85
 
 # --- Rating Weights ---
@@ -123,16 +123,18 @@ Research Summary:
 {research_summary}
 """
 
-# Updated rating prompt - now takes extracted_facts instead of research_summary
+# Refined rating prompt - emphasizes high bar for 9+ scores
 RATING_PROMPT_TEMPLATE = """
-Based *strictly* on the following Extracted Facts for the SaaS idea "{idea_name}", provide a score from 0.0 to 10.0 AND a brief (one sentence max) justification for *each* of the 5 criteria.
-Your justification should reference the provided facts. If facts state "None mentioned" for a criterion, assign a low score (0-2) and state that as the justification.
+Critically evaluate the SaaS idea "{idea_name}" based *strictly* on the following Extracted Facts.
+Provide a score from 0.0 to 10.0 AND a brief (one sentence max) justification for *each* of the 5 criteria.
+**Be conservative with high scores (9-10). A score of 9+ requires strong, direct evidence within the facts for that specific criterion.** For example, a high 'Need' score requires facts explicitly mentioning significant user pain or demand. High 'WillingnessToPay' requires facts mentioning existing payment for similar solutions or clear pricing evidence.
+Your justification MUST reference the provided facts. If facts state "None mentioned" for a criterion, assign a low score (0-2) and state that as the justification.
 
-1.  **Need (0-10):** How strongly do the facts indicate a clear user pain point or market need?
-2.  **WillingnessToPay (0-10):** Do the facts suggest users pay for similar things or mention pricing?
-3.  **Competition (0-10):** Do the facts mention existing direct competitors? (Lower score if strong competitors mentioned).
-4.  **Monetization (0-10):** Do the facts hint at common pricing models?
-5.  **Feasibility (0-10):** Do the facts mention similar tools/tech exist?
+1.  **Need (0-10):** How strongly do the facts indicate a clear, significant user pain point or market need? (9+ requires explicit mention of strong pain/demand).
+2.  **WillingnessToPay (0-10):** Do the facts provide evidence users pay for similar solutions or mention relevant pricing? (9+ requires clear evidence of payment).
+3.  **Competition (0-10):** Do the facts mention existing direct competitors? (Lower score if strong/numerous competitors mentioned; 9+ requires facts indicating very weak or no direct competition).
+4.  **Monetization (0-10):** Do the facts clearly hint at viable, common pricing models (like SaaS subscriptions)? (9+ requires clear mention of established models).
+5.  **Feasibility (0-10):** Do the facts strongly suggest technical feasibility based on existing tools/tech? (9+ requires clear evidence similar tech exists).
 
 Extracted Facts:
 {rating_context}
