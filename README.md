@@ -1,6 +1,6 @@
 # SaaS Idea Automator
 
-This project contains a Python script designed to automate the process of generating, researching, and evaluating potential SaaS (Software as a Service) ideas, with a focus on identifying concepts with strong day-1 revenue potential. It leverages Google's Gemini API for idea generation, query generation, and rating, and the Google Custom Search API for research.
+This project contains a Python script designed to automate the process of generating, researching, and evaluating potential SaaS (Software as a Service) ideas, with a focus on identifying concepts with strong day-1 revenue potential. It leverages Google's Gemini API for idea generation, query generation, and rating, and a configurable search API (currently set to Brave Search API) for research.
 
 ## Core Functionality
 
@@ -20,7 +20,7 @@ This project contains a Python script designed to automate the process of genera
 .
 ├── .env                    # Environment variables (API Keys, Config - MUST BE CREATED)
 ├── .gitignore              # Git ignore rules
-├── api_clients.py          # Functions for interacting with external APIs (Gemini, Google Search, Uptime Kuma)
+├── api_clients.py          # Functions for interacting with external APIs (Gemini, Search Provider, Uptime Kuma)
 ├── config.py               # Loads .env, defines constants, prompts, weights
 ├── ideas_state.db          # SQLite database for tracking processed ideas (created on first run)
 ├── saas_idea_automator.py  # Main script orchestrating the process
@@ -51,13 +51,33 @@ This project contains a Python script designed to automate the process of genera
     *(This installs `aiohttp`, `python-dotenv`, `requests`)*
 4.  **Create and Configure `.env` File:**
     *   Copy or rename `.env.example` (if provided) or create a new file named `.env` in the project root.
-    *   Add your API keys and Custom Search Engine ID:
+    *   Add your API keys. Choose ONE search provider (Brave, Serper, or Google) and provide its key(s). Brave is currently prioritized in `config.py`.
         ```dotenv
-        GOOGLE_API_KEY="YOUR_GOOGLE_API_KEY"
-        GOOGLE_CSE_ID="YOUR_GOOGLE_CSE_ID"
+        # --- Search API (Choose ONE) ---
+        BRAVE_API_KEY="YOUR_BRAVE_API_KEY"
+        # SERPER_API_KEY="YOUR_SERPER_API_KEY"
+        # GOOGLE_API_KEY="YOUR_GOOGLE_API_KEY"
+        # GOOGLE_CSE_ID="YOUR_GOOGLE_CSE_ID"
+
+        # --- AI Model API ---
         GEMINI_API_KEY="YOUR_GEMINI_API_KEY"
+        # Optional: Specify model
+        # GEMINI_MODEL="gemini-pro"
+
+        # --- Monitoring ---
         # Optional: Add your Uptime Kuma Push URL if using it
-        UPTIME_KUMA_PUSH_URL="YOUR_PUSH_URL_HERE"
+        # UPTIME_KUMA_PUSH_URL="YOUR_PUSH_URL_HERE"
+
+        # --- Email Notifications ---
+        # Optional: Enable and configure SMTP settings
+        # ENABLE_EMAIL_NOTIFICATIONS="true"
+        # SMTP_SERVER="smtp.example.com"
+        # SMTP_PORT="587"
+        # SMTP_USER="your_email@example.com"
+        # SMTP_PASSWORD="YOUR_EMAIL_APP_PASSWORD"
+        # EMAIL_SENDER="Sender Name <your_email@example.com>"
+        # EMAIL_RECIPIENT="recipient@example.com"
+
         # Optional: Override parameters from config.py
         # GEMINI_MODEL="gemini-1.5-pro-latest"
         # MAX_RUNS=50
@@ -106,7 +126,9 @@ This will read the output file and print the most common keywords found in the n
 *   Libraries listed in `requirements.txt`:
     *   `aiohttp`: For asynchronous HTTP requests.
     *   `python-dotenv`: For loading the `.env` file.
-    *   `requests`: Standard HTTP library (used for dependency check, potentially fallback).
+    *   `requests`: Standard HTTP library.
+    *   `nltk`: For text processing in trend analysis.
+    *   `sentence-transformers`: For generating semantic embeddings (requires PyTorch or TensorFlow).
 *   `sqlite3`: (Included in standard Python library)
 
-*(Note: If implementing more advanced NLP for trend analysis, libraries like `nltk` might be added later).*
+*(Note: The script attempts to download required NLTK data (`punkt`, `stopwords`) automatically on first run if missing).*
