@@ -48,7 +48,7 @@ try:
     DELAY_BETWEEN_IDEAS = int(os.environ.get("DELAY_BETWEEN_IDEAS", 5))
     MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", 1))
     MAX_SUMMARY_LENGTH = int(os.environ.get("MAX_SUMMARY_LENGTH", 2500))
-    MAX_RUNS = int(os.environ.get("MAX_RUNS", 1)) # Limit to 1 run for testing fact extraction
+    MAX_RUNS = int(os.environ.get("MAX_RUNS", 99999))
     WAIT_BETWEEN_BATCHES = int(os.environ.get("WAIT_BETWEEN_BATCHES", 10))
     EXPLORE_RATIO = float(os.environ.get("EXPLORE_RATIO", 0.2))
     SMTP_PORT = int(SMTP_PORT)
@@ -56,7 +56,7 @@ except ValueError as e:
     logging.error(f"Error parsing numeric config: {e}. Using defaults.")
     IDEAS_PER_BATCH = 10; RATING_THRESHOLD = 9.0; SEARCH_RESULTS_LIMIT = 10
     DELAY_BETWEEN_IDEAS = 5; MAX_CONCURRENT_TASKS = 1; MAX_SUMMARY_LENGTH = 2500
-    MAX_RUNS = 1; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2 # Limit to 1 run for testing fact extraction
+    MAX_RUNS = 99999; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2
     SMTP_PORT = 587; NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = 0.85
 
 # --- Rating Weights ---
