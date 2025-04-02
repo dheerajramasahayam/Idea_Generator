@@ -21,9 +21,7 @@ import numpy
 import sklearn # Check if sklearn is available
 
 # --- Core Logic Functions ---
-# (generate_ideas, get_search_queries, research_idea, rate_idea, process_single_idea)
-# Assume these are present and correct from the previous version
-
+# (Assume generate_ideas, get_search_queries, research_idea, extract_facts_for_rating, rate_idea, process_single_idea are present and correct)
 async def generate_ideas(session, full_prompt):
     """Generates a batch of SaaS ideas using the Gemini API via api_clients."""
     logging.info(f">>> Generating new SaaS ideas...")
@@ -225,14 +223,15 @@ async def main():
             else: logging.info(f"Initial explore ratio: {current_explore_ratio:.2f}")
 
             # --- Periodic Trend Analysis ---
-            # Corrected logic: Fetch data first, then call combined analysis
+            # Force analysis on run 2 for testing by removing min_ideas check temporarily
             if run_count > 1 and (run_count - 1) % config.TREND_ANALYSIS_RUN_INTERVAL == 0:
                  high_rated_ideas_data = state_manager.get_high_rated_ideas(limit=100)
-                 if high_rated_ideas_data and len(high_rated_ideas_data) >= config.TREND_ANALYSIS_MIN_IDEAS:
-                      promising_themes = analysis_utils.get_combined_themes(high_rated_ideas_data)
-                 else:
-                      logging.info("Skipping trend analysis: Not enough high-rated ideas found yet.")
-                      promising_themes = [] # Reset themes if not enough data
+                 # Force run even if few ideas, get_combined_themes handles empty list
+                 logging.info(f"Forcing trend analysis with {len(high_rated_ideas_data)} high-rated ideas.") # Log before call
+                 promising_themes = analysis_utils.get_combined_themes(high_rated_ideas_data)
+            elif run_count == 1:
+                 promising_themes = []
+
 
             # --- Prompt Construction ---
             explore = random.random() < current_explore_ratio
@@ -311,15 +310,24 @@ async def main():
             batch_end_time = time.time()
             batch_duration = batch_end_time - batch_start_time
             logging.info(f"===== Finished Run {run_count}/{config.MAX_RUNS} in {batch_duration:.2f} seconds =====")
-            if config.ENABLE_EMAIL_NOTIFICATIONS and (batch_stats['saved_ideas'] or batch_stats['errors'] > 0):
+
+            # Explicitly check lengths/values for email condition
+            send_email_condition = config.ENABLE_EMAIL_NOTIFICATIONS and \
+                                   (len(batch_stats['saved_ideas']) > 0 or batch_stats['errors'] > 0)
+            logging.debug(f"Email condition check: Enabled={config.ENABLE_EMAIL_NOTIFICATIONS}, Saved>0={len(batch_stats['saved_ideas']) > 0}, Errors>0={batch_stats['errors'] > 0}. Result: {send_email_condition}")
+            if send_email_condition:
+                logging.info(f"Condition met (Saved: {len(batch_stats['saved_ideas'])}, Errors: {batch_stats['errors']}), attempting to send summary email...") # More detailed log
                 email_subject = f"SaaS Automator Run {run_count} Summary"
                 email_body = f"Run {run_count} completed in {batch_duration:.2f}s.\nProcessed: {batch_stats['processed']}. Errors: {batch_stats['errors']}.\n"
                 if batch_stats['saved_ideas']: email_body += f"Saved {len(batch_stats['saved_ideas'])} ideas (Threshold: {config.RATING_THRESHOLD}):\n" + "\n".join([f"- {s}" for s in batch_stats['saved_ideas']])
                 else: email_body += "No new ideas met threshold."
                 notifications.send_summary_email(email_subject, email_body)
-            elif config.ENABLE_EMAIL_NOTIFICATIONS: logging.info("Skipping summary email: No saved ideas or errors.")
+            elif config.ENABLE_EMAIL_NOTIFICATIONS:
+                 logging.info("Skipping summary email: No saved ideas or errors this run.")
+
             status_message = f"Finished Run {run_count}. Processed {batch_stats['processed']}. Saved: {len(batch_stats['saved_ideas'])}. Errors: {batch_stats['errors']}."
             await api_clients.ping_uptime_kuma(session, message=status_message, ping_value=int(batch_duration))
+
             if run_count < config.MAX_RUNS: logging.info(f"--- Waiting {config.WAIT_BETWEEN_BATCHES}s ---"); await asyncio.sleep(config.WAIT_BETWEEN_BATCHES)
 
     logging.info("SaaS Idea Automator finished.")
