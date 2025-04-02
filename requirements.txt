@@ -3,3 +3,5 @@ python-dotenv
 requests
 nltk
 sentence-transformers
+scikit-learn
+numpy

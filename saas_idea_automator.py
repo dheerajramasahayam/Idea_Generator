@@ -17,9 +17,12 @@ import notifications
 # Import dependencies needed for main execution block check (if any)
 import nltk
 import sentence_transformers
-import numpy # Check numpy as well
+import numpy
+import sklearn # Check if sklearn is available
 
 # --- Core Logic Functions ---
+# (generate_ideas, get_search_queries, research_idea, rate_idea, process_single_idea)
+# Assume these are present and correct from the previous version
 
 async def generate_ideas(session, full_prompt):
     """Generates a batch of SaaS ideas using the Gemini API via api_clients."""
@@ -104,42 +107,21 @@ async def research_idea(session, idea_name):
 async def extract_facts_for_rating(session, idea_name, research_summary):
     """Uses Gemini to extract key facts relevant to rating criteria."""
     logging.info(f">>> Extracting facts for: '{idea_name}'...")
-    if not research_summary:
-        logging.warning("Cannot extract facts, empty research summary.")
-        return None
-
-    prompt = config.FACT_EXTRACTION_PROMPT_TEMPLATE.format(
-        idea_name=idea_name,
-        research_summary=research_summary
-    )
+    if not research_summary: return None
+    prompt = config.FACT_EXTRACTION_PROMPT_TEMPLATE.format(idea_name=idea_name, research_summary=research_summary)
     extracted_facts = await api_clients.call_gemini_api_async(session, prompt)
-    if not extracted_facts:
-        logging.warning(f"Fact extraction failed for '{idea_name}'.")
-        return None
-
+    if not extracted_facts: logging.warning(f"Fact extraction failed for '{idea_name}'."); return None
     logging.info(f"Successfully extracted facts for '{idea_name}'.")
-    logging.debug(f"Extracted Facts:\n{extracted_facts}") # Log extracted facts at debug level
+    logging.debug(f"Extracted Facts:\n{extracted_facts}")
     return extracted_facts
 
 async def rate_idea(session, idea_name, rating_context):
-    """
-    Rates an idea based on provided context (extracted facts or raw summary) using Gemini.
-    Parses individual criteria scores and justifications, calculates weighted average.
-    Returns a tuple: (weighted_score, justifications_dict) or (None, None) on failure.
-    """
+    """Rates an idea based on provided context (extracted facts or raw summary) using Gemini."""
     logging.info(f">>> Rating idea: '{idea_name}' using provided context...")
-    if not rating_context:
-        logging.warning("Skipping rating due to empty context.")
-        return None, None
-
-    prompt = config.RATING_PROMPT_TEMPLATE.format(
-        idea_name=idea_name,
-        rating_context=rating_context # Use the context (facts or summary)
-    )
+    if not rating_context: return None, None
+    prompt = config.RATING_PROMPT_TEMPLATE.format(idea_name=idea_name, rating_context=rating_context)
     response_text = await api_clients.call_gemini_api_async(session, prompt)
-    if not response_text:
-        logging.warning(f"Failed to get rating breakdown from Gemini for '{idea_name}'.")
-        return None, None
+    if not response_text: return None, None
 
     scores, justifications = {}, {}
     expected_keys = ["need", "willingnesstopay", "competition", "monetization", "feasibility"]
@@ -169,10 +151,7 @@ async def rate_idea(session, idea_name, rating_context):
     return weighted_total, justifications
 
 async def process_single_idea(idea_name, idea_embedding, processed_ideas_set, session, semaphore, batch_stats):
-    """
-    Async function to research, extract facts, rate, and save state for a single idea.
-    Updates batch_stats dictionary.
-    """
+    """Async function to research, extract facts, rate, and save state for a single idea."""
     async with semaphore:
         idea_lower = idea_name.lower()
         if idea_lower in processed_ideas_set: return
@@ -181,20 +160,14 @@ async def process_single_idea(idea_name, idea_embedding, processed_ideas_set, se
         try:
             status = "researching"
             summary = await research_idea(session, idea_name)
-            await asyncio.sleep(random.uniform(0.5, 1.0)) # Shorter delay before fact extraction
-
+            await asyncio.sleep(random.uniform(0.5, 1.0))
             status = "fact_extraction"
             extracted_facts = await extract_facts_for_rating(session, idea_name, summary)
-            # Use extracted facts if successful, otherwise fallback to raw summary for rating
             rating_context = extracted_facts if extracted_facts else summary
-            if not rating_context: # If summary was also empty
-                 raise ValueError("Cannot rate idea, both research summary and fact extraction are empty.")
-
-            await asyncio.sleep(random.uniform(0.5, 1.0)) # Shorter delay before rating
-
+            if not rating_context: raise ValueError("Empty rating context.")
+            await asyncio.sleep(random.uniform(0.5, 1.0))
             status = "rating"
-            rating, justifications = await rate_idea(session, idea_name, rating_context) # Pass context
-
+            rating, justifications = await rate_idea(session, idea_name, rating_context)
             if rating is not None:
                 status = "rated"
                 if rating >= config.RATING_THRESHOLD:
@@ -251,8 +224,15 @@ async def main():
                 else: logging.info(f"Not enough recent ratings ({len(recent_ratings)}) to adjust explore ratio.")
             else: logging.info(f"Initial explore ratio: {current_explore_ratio:.2f}")
 
-            # --- Trend Analysis ---
-            if run_count > 1 and (run_count - 1) % 5 == 0: promising_themes = analysis_utils.get_promising_themes(top_n=5)
+            # --- Periodic Trend Analysis ---
+            # Corrected logic: Fetch data first, then call combined analysis
+            if run_count > 1 and (run_count - 1) % config.TREND_ANALYSIS_RUN_INTERVAL == 0:
+                 high_rated_ideas_data = state_manager.get_high_rated_ideas(limit=100)
+                 if high_rated_ideas_data and len(high_rated_ideas_data) >= config.TREND_ANALYSIS_MIN_IDEAS:
+                      promising_themes = analysis_utils.get_combined_themes(high_rated_ideas_data)
+                 else:
+                      logging.info("Skipping trend analysis: Not enough high-rated ideas found yet.")
+                      promising_themes = [] # Reset themes if not enough data
 
             # --- Prompt Construction ---
             explore = random.random() < current_explore_ratio
@@ -265,7 +245,7 @@ async def main():
 
             # --- Semantic Negative Feedback Filter ---
             ideas_after_neg_filter = []
-            candidate_embeddings_dict = {} # Store embeddings for ideas that pass
+            candidate_embeddings_dict = {}
             if low_rated_embeddings:
                 logging.info("Applying semantic negative feedback filter...")
                 candidate_embeddings_list = analysis_utils.generate_embeddings(initial_ideas)
@@ -273,20 +253,17 @@ async def main():
                     for idea, embedding in zip(initial_ideas, candidate_embeddings_list):
                         if not analysis_utils.check_similarity(embedding, low_rated_embeddings, config.NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD):
                             ideas_after_neg_filter.append(idea)
-                            candidate_embeddings_dict[idea] = embedding # Store embedding for later
-                        else: logging.info(f"Filtered out '{idea}' due to similarity with low-rated ideas.")
-                    logging.info(f"{len(ideas_after_neg_filter)} ideas remaining after semantic negative filter.")
+                            candidate_embeddings_dict[idea] = embedding
+                        else: logging.info(f"Filtered out '{idea}' due to similarity.")
+                    logging.info(f"{len(ideas_after_neg_filter)} ideas remaining after semantic filter.")
                 else:
-                    logging.warning("Could not generate embeddings for candidates. Skipping semantic filter.")
+                    logging.warning("Could not generate embeddings. Skipping semantic filter.")
                     ideas_after_neg_filter = initial_ideas
-                    # Need to generate embeddings later if skipping filter but still want to store them
                     candidate_embeddings_dict = {idea: None for idea in initial_ideas}
             else:
                  logging.info("No low-rated embeddings found. Skipping semantic filter.")
                  ideas_after_neg_filter = initial_ideas
-                 # Need to generate embeddings later if skipping filter but still want to store them
                  candidate_embeddings_dict = {idea: None for idea in initial_ideas}
-
 
             # --- Self-Critique Step ---
             ideas = []
@@ -311,26 +288,19 @@ async def main():
             # --- Process Final Ideas ---
             if not ideas: logging.warning("No ideas to process."); await asyncio.sleep(10); continue
             logging.info(f"Attempting to process {len(ideas)} final ideas.")
-
-            # Regenerate embeddings if they weren't generated during semantic filtering
             final_idea_embeddings_map = {}
             ideas_to_embed = []
             for idea in ideas:
-                 if idea in candidate_embeddings_dict and candidate_embeddings_dict[idea] is not None:
-                      final_idea_embeddings_map[idea] = candidate_embeddings_dict[idea]
-                 else:
-                      ideas_to_embed.append(idea)
-
+                 if idea in candidate_embeddings_dict and candidate_embeddings_dict[idea] is not None: final_idea_embeddings_map[idea] = candidate_embeddings_dict[idea]
+                 else: ideas_to_embed.append(idea)
             if ideas_to_embed:
-                 logging.info(f"Generating embeddings for {len(ideas_to_embed)} ideas that missed initial embedding.")
+                 logging.info(f"Generating embeddings for {len(ideas_to_embed)} ideas missing initial embedding.")
                  new_embeddings = analysis_utils.generate_embeddings(ideas_to_embed)
                  if new_embeddings and len(new_embeddings) == len(ideas_to_embed):
-                      for idea, embedding in zip(ideas_to_embed, new_embeddings):
-                           final_idea_embeddings_map[idea] = embedding
+                      for idea, embedding in zip(ideas_to_embed, new_embeddings): final_idea_embeddings_map[idea] = embedding
                  else:
-                      logging.error("Failed to generate embeddings for some final ideas. They will be stored without embeddings.")
-                      for idea in ideas_to_embed:
-                           final_idea_embeddings_map[idea] = None # Ensure all ideas have an entry
+                      logging.error("Failed to generate embeddings for some final ideas.");
+                      for idea in ideas_to_embed: final_idea_embeddings_map[idea] = None
 
             tasks = [asyncio.create_task(process_single_idea(idea, final_idea_embeddings_map.get(idea), processed_ideas_set, session, semaphore, batch_stats)) for idea in ideas if idea.lower() not in processed_ideas_set]
 
@@ -341,7 +311,6 @@ async def main():
             batch_end_time = time.time()
             batch_duration = batch_end_time - batch_start_time
             logging.info(f"===== Finished Run {run_count}/{config.MAX_RUNS} in {batch_duration:.2f} seconds =====")
-
             if config.ENABLE_EMAIL_NOTIFICATIONS and (batch_stats['saved_ideas'] or batch_stats['errors'] > 0):
                 email_subject = f"SaaS Automator Run {run_count} Summary"
                 email_body = f"Run {run_count} completed in {batch_duration:.2f}s.\nProcessed: {batch_stats['processed']}. Errors: {batch_stats['errors']}.\n"
@@ -349,10 +318,8 @@ async def main():
                 else: email_body += "No new ideas met threshold."
                 notifications.send_summary_email(email_subject, email_body)
             elif config.ENABLE_EMAIL_NOTIFICATIONS: logging.info("Skipping summary email: No saved ideas or errors.")
-
             status_message = f"Finished Run {run_count}. Processed {batch_stats['processed']}. Saved: {len(batch_stats['saved_ideas'])}. Errors: {batch_stats['errors']}."
             await api_clients.ping_uptime_kuma(session, message=status_message, ping_value=int(batch_duration))
-
             if run_count < config.MAX_RUNS: logging.info(f"--- Waiting {config.WAIT_BETWEEN_BATCHES}s ---"); await asyncio.sleep(config.WAIT_BETWEEN_BATCHES)
 
     logging.info("SaaS Idea Automator finished.")
@@ -365,7 +332,7 @@ if __name__ == "__main__":
              if not all([config.SMTP_SERVER, config.SMTP_PORT, config.SMTP_USER, config.SMTP_PASSWORD, config.EMAIL_SENDER, config.EMAIL_RECIPIENT]):
                   logging.warning("Email notifications enabled but SMTP settings missing.")
         try:
-            import aiohttp, dotenv, requests, sqlite3, nltk, sentence_transformers, numpy
+            import aiohttp, dotenv, requests, sqlite3, nltk, sentence_transformers, numpy, sklearn
             logging.debug("All required libraries seem installed.")
         except ImportError as import_err:
              logging.error(f"Missing required library: {import_err.name}")

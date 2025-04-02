@@ -126,9 +126,11 @@ This will read the output file and print the most common keywords found in the n
 *   Libraries listed in `requirements.txt`:
     *   `aiohttp`: For asynchronous HTTP requests.
     *   `python-dotenv`: For loading the `.env` file.
-    *   `requests`: Standard HTTP library.
-    *   `nltk`: For text processing in trend analysis.
-    *   `sentence-transformers`: For generating semantic embeddings (requires PyTorch or TensorFlow).
+*   `requests`: Standard HTTP library.
+*   `nltk`: For text processing (tokenization, stopwords).
+*   `sentence-transformers`: For generating semantic embeddings (requires PyTorch or TensorFlow).
+*   `scikit-learn`: For LDA topic modeling and K-Means clustering.
+*   `numpy`: Dependency for scikit-learn and sentence-transformers.
 *   `sqlite3`: (Included in standard Python library)
 
 *(Note: The script attempts to download required NLTK data (`punkt`, `stopwords`) automatically on first run if missing).*

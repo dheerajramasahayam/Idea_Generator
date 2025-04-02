@@ -40,6 +40,15 @@ EMAIL_RECIPIENT = os.environ.get("EMAIL_RECIPIENT")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = float(os.environ.get("NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD", 0.85))
 
+# --- Trend Analysis Settings ---
+TREND_ANALYSIS_MIN_IDEAS = int(os.environ.get("TREND_ANALYSIS_MIN_IDEAS", 10)) # Min high-rated ideas needed to run analysis
+TREND_ANALYSIS_RUN_INTERVAL = int(os.environ.get("TREND_ANALYSIS_RUN_INTERVAL", 5)) # How often (in runs) to perform analysis
+TREND_NGRAM_COUNT = int(os.environ.get("TREND_NGRAM_COUNT", 3)) # Number of top N-grams to use
+TREND_LDA_TOPICS = int(os.environ.get("TREND_LDA_TOPICS", 3)) # Number of LDA topics
+TREND_LDA_WORDS = int(os.environ.get("TREND_LDA_WORDS", 3)) # Number of words per LDA topic
+TREND_CLUSTER_COUNT = int(os.environ.get("TREND_CLUSTER_COUNT", 3)) # Number of K-Means clusters
+TREND_CLUSTER_THEMES_PER_CLUSTER = int(os.environ.get("TREND_CLUSTER_THEMES_PER_CLUSTER", 1)) # How many themes/keywords to extract per cluster
+
 # --- Script Parameters ---
 try:
     IDEAS_PER_BATCH = int(os.environ.get("IDEAS_PER_BATCH", 10))
@@ -48,7 +57,7 @@ try:
     DELAY_BETWEEN_IDEAS = int(os.environ.get("DELAY_BETWEEN_IDEAS", 5))
     MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", 1))
     MAX_SUMMARY_LENGTH = int(os.environ.get("MAX_SUMMARY_LENGTH", 2500))
-    MAX_RUNS = int(os.environ.get("MAX_RUNS", 999999))
+    MAX_RUNS = int(os.environ.get("MAX_RUNS", 6)) # Set to 6 for testing trend analysis
     WAIT_BETWEEN_BATCHES = int(os.environ.get("WAIT_BETWEEN_BATCHES", 10))
     EXPLORE_RATIO = float(os.environ.get("EXPLORE_RATIO", 0.2))
     SMTP_PORT = int(SMTP_PORT)
@@ -56,8 +65,12 @@ except ValueError as e:
     logging.error(f"Error parsing numeric config: {e}. Using defaults.")
     IDEAS_PER_BATCH = 10; RATING_THRESHOLD = 9.0; SEARCH_RESULTS_LIMIT = 10
     DELAY_BETWEEN_IDEAS = 5; MAX_CONCURRENT_TASKS = 1; MAX_SUMMARY_LENGTH = 2500
-    MAX_RUNS = 999999; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2
+    MAX_RUNS = 6; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2 # Set to 6 for testing trend analysis
     SMTP_PORT = 587; NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = 0.85
+    TREND_ANALYSIS_MIN_IDEAS = 10; TREND_ANALYSIS_RUN_INTERVAL = 5
+    TREND_NGRAM_COUNT = 3; TREND_LDA_TOPICS = 3; TREND_LDA_WORDS = 3
+    TREND_CLUSTER_COUNT = 3; TREND_CLUSTER_THEMES_PER_CLUSTER = 1
+
 
 # --- Rating Weights ---
 RATING_WEIGHTS = { "need": 0.25, "willingnesstopay": 0.30, "competition": 0.10, "monetization": 0.20, "feasibility": 0.15 }
@@ -69,6 +82,7 @@ else: num_criteria = len(RATING_WEIGHTS); RATING_WEIGHTS = {k: 1.0 / num_criteri
 OUTPUT_FILE = "gemini_rated_ideas.md"; STATE_FILE = "ideas_state.db"; LOG_FILE = "automator.log"
 
 # --- Prompts ---
+# (Keep existing prompts)
 IDEA_GENERATION_PROMPT_TEMPLATE = """
 Generate {num_ideas} unique SaaS ideas focused on B2B or prosumer niches with potential for day-1 revenue.
 Focus on enhancing existing platforms (like Shopify, Bubble, Webflow, Airtable), niche data aggregation, or freelancer/agency automation.
@@ -96,38 +110,32 @@ Be concise. Output *only* the facts for each criterion, formatted exactly like t
 
 Need:
 - [Fact 1 related to need/pain point]
-- [Fact 2 related to need/pain point]
 (or "None mentioned")
 
 WillingnessToPay:
 - [Fact 1 related to payment/pricing]
-- [Fact 2 related to payment/pricing]
 (or "None mentioned")
 
 Competition:
 - [Fact 1 mentioning competitors/alternatives]
-- [Fact 2 mentioning competitors/alternatives]
 (or "None mentioned")
 
 Monetization:
 - [Fact 1 mentioning pricing models]
-- [Fact 2 mentioning pricing models]
 (or "None mentioned")
 
 Feasibility:
 - [Fact 1 related to existing tech/tools]
-- [Fact 2 related to existing tech/tools]
 (or "None mentioned")
 
 Research Summary:
 {research_summary}
 """
 
-# Refined rating prompt - emphasizes high bar for 9+ scores
 RATING_PROMPT_TEMPLATE = """
 Critically evaluate the SaaS idea "{idea_name}" based *strictly* on the following Extracted Facts.
 Provide a score from 0.0 to 10.0 AND a brief (one sentence max) justification for *each* of the 5 criteria.
-**Be conservative with high scores (9-10). A score of 9+ requires strong, direct evidence within the facts for that specific criterion.** For example, a high 'Need' score requires facts explicitly mentioning significant user pain or demand. High 'WillingnessToPay' requires facts mentioning existing payment for similar solutions or clear pricing evidence.
+**Be conservative with high scores (9-10). A score of 9+ requires strong, direct evidence within the facts for that specific criterion.**
 Your justification MUST reference the provided facts. If facts state "None mentioned" for a criterion, assign a low score (0-2) and state that as the justification.
 
 1.  **Need (0-10):** How strongly do the facts indicate a clear, significant user pain point or market need? (9+ requires explicit mention of strong pain/demand).
