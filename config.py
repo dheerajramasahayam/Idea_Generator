@@ -1,5 +1,6 @@
 import os
 import logging
+import json # Import json library
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -57,7 +58,7 @@ try:
     DELAY_BETWEEN_IDEAS = int(os.environ.get("DELAY_BETWEEN_IDEAS", 5))
     MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", 1))
     MAX_SUMMARY_LENGTH = int(os.environ.get("MAX_SUMMARY_LENGTH", 2500))
-    MAX_RUNS = int(os.environ.get("MAX_RUNS", 1)) # Limit to 1 run for testing description generation
+    MAX_RUNS = int(os.environ.get("MAX_RUNS", 1)) # Limit to 1 run for testing prompt loading
     WAIT_BETWEEN_BATCHES = int(os.environ.get("WAIT_BETWEEN_BATCHES", 10))
     EXPLORE_RATIO = float(os.environ.get("EXPLORE_RATIO", 0.2))
     SMTP_PORT = int(SMTP_PORT)
@@ -80,108 +81,47 @@ else: num_criteria = len(RATING_WEIGHTS); RATING_WEIGHTS = {k: 1.0 / num_criteri
 
 # --- File Paths ---
 OUTPUT_FILE = "gemini_rated_ideas.md"; STATE_FILE = "ideas_state.db"; LOG_FILE = "automator.log"
+PROMPT_FILE = "prompts.json" # Define path for prompts file
 
-# --- Prompts ---
-IDEA_GENERATION_PROMPT_TEMPLATE = """
-Generate {num_ideas} unique SaaS ideas focused on B2B or prosumer niches with potential for day-1 revenue.
-Focus on enhancing existing platforms (like Shopify, Bubble, Webflow, Airtable), niche data aggregation, or freelancer/agency automation.
-Avoid ideas related to crypto, NFTs, or general consumer apps (like recipe finders or basic fitness trackers).
-Good examples: "Airtable Interface Usage Analytics", "Local Commercial Real Estate Zoning Change Monitor", "Shopify App Conflict Detector".
-Output only a numbered list of concise idea names, each on a new line. Do not include any preamble or explanation.
-Example:
-1. Idea Name One
-2. Idea Name Two
-"""
+# --- Load Prompts from JSON ---
+try:
+    with open(PROMPT_FILE, 'r', encoding='utf-8') as f:
+        _prompts = json.load(f)
+    logging.info(f"Successfully loaded prompts from {PROMPT_FILE}")
+except FileNotFoundError:
+    logging.error(f"Prompt file '{PROMPT_FILE}' not found. Using empty prompts.")
+    _prompts = {}
+except json.JSONDecodeError as e:
+    logging.error(f"Error decoding JSON from '{PROMPT_FILE}': {e}. Using empty prompts.")
+    _prompts = {}
+except Exception as e:
+     logging.error(f"Unexpected error loading prompts from '{PROMPT_FILE}': {e}. Using empty prompts.")
+     _prompts = {}
 
-IDEA_DESCRIPTION_PROMPT_TEMPLATE = """
-For the following SaaS idea name, write a concise 1-2 sentence description explaining its core value proposition. Focus on the problem it solves and for whom. Output only the description text.
-
-SaaS Idea Name: {idea_name}
-"""
-
-SEARCH_QUERY_GENERATION_PROMPT_TEMPLATE = """
-Generate exactly 3 targeted Google search queries to research the day-1 revenue potential of the following SaaS idea.
-Focus queries on finding alternatives/competition, pricing models, and market need/pain points.
-Output only the 3 search queries, each on a new line. Do not include numbers or any other text.
-
-SaaS Idea: {idea_name}
-"""
-
-FACT_EXTRACTION_PROMPT_TEMPLATE = """
-Analyze the following Research Summary for the SaaS idea "{idea_name}".
-Extract key facts, evidence, or mentions *strictly from the summary text* that relate to each of the 5 criteria below.
-If no relevant information is found for a criterion in the summary, state "None mentioned".
-Be concise. Output *only* the facts for each criterion, formatted exactly like this:
-
-Need:
-- [Fact 1 related to need/pain point]
-(or "None mentioned")
-
-WillingnessToPay:
-- [Fact 1 related to payment/pricing]
-(or "None mentioned")
-
-Competition:
-- [Fact 1 mentioning competitors/alternatives]
-(or "None mentioned")
-
-Monetization:
-- [Fact 1 mentioning pricing models]
-(or "None mentioned")
-
-Feasibility:
-- [Fact 1 related to existing tech/tools]
-(or "None mentioned")
-
-Research Summary:
-{research_summary}
-"""
-
-RATING_PROMPT_TEMPLATE = """
-Critically evaluate the SaaS idea "{idea_name}" based *strictly* on the following Extracted Facts.
-Provide a score from 0.0 to 10.0 AND a brief (one sentence max) justification for *each* of the 5 criteria.
-**Be conservative with high scores (9-10). A score of 9+ requires strong, direct evidence within the facts for that specific criterion.**
-Your justification MUST reference the provided facts. If facts state "None mentioned" for a criterion, assign a low score (0-2) and state that as the justification.
-
-1.  **Need (0-10):** How strongly do the facts indicate a clear, significant user pain point or market need? (9+ requires explicit mention of strong pain/demand).
-2.  **WillingnessToPay (0-10):** Do the facts provide evidence users pay for similar solutions or mention relevant pricing? (9+ requires clear evidence of payment).
-3.  **Competition (0-10):** Do the facts mention existing direct competitors? (Lower score if strong/numerous competitors mentioned; 9+ requires facts indicating very weak or no direct competition).
-4.  **Monetization (0-10):** Do the facts clearly hint at viable, common pricing models (like SaaS subscriptions)? (9+ requires clear mention of established models).
-5.  **Feasibility (0-10):** Do the facts strongly suggest technical feasibility based on existing tools/tech? (9+ requires clear evidence similar tech exists).
-
-Extracted Facts:
-{rating_context}
-
-Output *only* the 5 scores and their justifications in the following exact format, each on a new line:
-Need: [score] | Justification: [one sentence justification based on facts]
-WillingnessToPay: [score] | Justification: [one sentence justification based on facts]
-Competition: [score] | Justification: [one sentence justification based on facts]
-Monetization: [score] | Justification: [one sentence justification based on facts]
-Feasibility: [score] | Justification: [one sentence justification based on facts]
-"""
-
-SELF_CRITIQUE_PROMPT_TEMPLATE = """
-Review the following list of generated SaaS ideas. Identify and return *only* the ideas that strongly align with these core goals:
-- Focus: B2B or prosumer niches.
-- Potential: Clear path to day-1 revenue (e.g., solving urgent business pain, high perceived value).
-- Type: Enhancing existing platforms (Shopify, Bubble, etc.), niche data aggregation, or freelancer/agency automation.
-- Avoid: Crypto, NFTs, general consumer apps (fitness, recipes).
-
-Generated Ideas List:
-{idea_list_str}
-
-Output *only* a numbered list of the idea names from the input list that strongly align with ALL the above goals. If none strongly align, output "None". Do not include any preamble, explanation, or justification.
-"""
+# Assign prompts to variables, using .get() with default empty string
+IDEA_GENERATION_PROMPT_TEMPLATE = _prompts.get("IDEA_GENERATION", "")
+IDEA_DESCRIPTION_PROMPT_TEMPLATE = _prompts.get("IDEA_DESCRIPTION", "")
+SEARCH_QUERY_GENERATION_PROMPT_TEMPLATE = _prompts.get("SEARCH_QUERY_GENERATION", "")
+FACT_EXTRACTION_PROMPT_TEMPLATE = _prompts.get("FACT_EXTRACTION", "")
+RATING_PROMPT_TEMPLATE = _prompts.get("RATING", "")
+SELF_CRITIQUE_PROMPT_TEMPLATE = _prompts.get("SELF_CRITIQUE", "")
 
 # --- Validation ---
 def validate_config():
-    """Checks if essential API keys and required email settings (if enabled) are loaded."""
+    """Checks if essential API keys, prompts, and required email settings are loaded."""
     valid = True
+    # Check Search Provider
     if not SEARCH_PROVIDER: logging.error("No valid Search API provider configured."); valid = False
     elif SEARCH_PROVIDER == "google" and (not GOOGLE_API_KEY or not GOOGLE_CSE_ID): logging.error("Google Search keys missing."); valid = False
     elif SEARCH_PROVIDER == "serper" and not SERPER_API_KEY: logging.error("Serper Search key missing."); valid = False
     elif SEARCH_PROVIDER == "brave" and not BRAVE_API_KEY: logging.error("Brave Search key missing."); valid = False
+    # Check Gemini Key
     if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY": logging.error("GEMINI_API_KEY missing."); valid = False
+    # Check Prompts
+    if not all([IDEA_GENERATION_PROMPT_TEMPLATE, IDEA_DESCRIPTION_PROMPT_TEMPLATE, SEARCH_QUERY_GENERATION_PROMPT_TEMPLATE, FACT_EXTRACTION_PROMPT_TEMPLATE, RATING_PROMPT_TEMPLATE, SELF_CRITIQUE_PROMPT_TEMPLATE]):
+         logging.error("One or more prompt templates failed to load from prompts.json.")
+         valid = False
+    # Check Email Settings if Enabled
     if ENABLE_EMAIL_NOTIFICATIONS:
         logging.info("Email notifications enabled. Validating SMTP settings...")
         email_valid = True
@@ -193,6 +133,7 @@ def validate_config():
         try: int(SMTP_PORT)
         except (ValueError, TypeError): logging.error(f"Invalid SMTP_PORT: {SMTP_PORT}."); email_valid = False
         if not email_valid: valid = False
+    # Check Embedding Model
     if EMBEDDING_MODEL == "all-MiniLM-L6-v2": logging.info(f"Using default embedding model: {EMBEDDING_MODEL}")
     else: logging.info(f"Using embedding model from env: {EMBEDDING_MODEL}")
     return valid
