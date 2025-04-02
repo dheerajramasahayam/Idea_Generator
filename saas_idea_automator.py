@@ -54,6 +54,7 @@ async def generate_descriptions(session, idea_names):
     logging.info(f"Finished generating descriptions (successful/failed): {len([d for d in descriptions.values() if d is not None])}/{len(descriptions)}")
     return descriptions
 
+
 async def get_search_queries(session, idea_name):
     """Generates targeted search queries for an idea using Gemini."""
     logging.info(f"--- Generating search queries for: '{idea_name}' ---")
@@ -201,19 +202,24 @@ async def main():
                      else: logging.info("Skipping trend analysis: Not enough high-rated ideas."); promising_themes = []
             else: logging.info(f"Initial explore ratio: {current_explore_ratio:.2f}"); promising_themes = []
 
-            # --- Idea Generation ---
-            initial_ideas = []
-            generation_mode = "New Ideas (Default)"
-
-            # Prepare keyword avoidance string (always do this)
+            # --- Prepare Negative Feedback (Keywords & Examples) ---
             avoid_keywords_str = ""
-            low_rated_texts = state_manager.get_low_rated_texts(limit=50)
+            avoid_examples_str = ""
+            low_rated_texts = state_manager.get_low_rated_texts(limit=50) # Get names/descriptions
             if low_rated_texts:
+                 # Extract Keywords
                  avoid_keywords = analysis_utils.extract_keywords(low_rated_texts, top_n=15)
                  if avoid_keywords:
                       avoid_keywords_str = "\n\nAvoid ideas related to these keywords: " + ", ".join(avoid_keywords)
+                 # Select Examples (prefer descriptions, limit to 3)
+                 avoid_examples = random.sample(low_rated_texts, min(len(low_rated_texts), 3))
+                 if avoid_examples:
+                      avoid_examples_str = "\n\nAlso avoid generating ideas conceptually similar to these low-rated examples:\n" + "".join([f"- {ex}\n" for ex in avoid_examples])
 
-            # Decide generation strategy
+            # --- Idea Generation: Multi-Step, Variation, or New ---
+            initial_ideas = []
+            generation_mode = "New Ideas (Default)"
+
             if config.ENABLE_MULTI_STEP_GENERATION:
                  logging.info("Attempting multi-step generation strategy...")
                  generation_mode = "Multi-Step"
@@ -232,9 +238,11 @@ async def main():
                                 if valid_selected_concepts:
                                      specific_idea_tasks = []
                                      for concept in valid_selected_concepts:
-                                          # Add keyword avoidance to specific idea prompt
-                                          specific_prompt = config.SPECIFIC_IDEA_GENERATION_PROMPT_TEMPLATE.format(selected_concept=concept, num_ideas=config.NUM_IDEAS_PER_CONCEPT)
-                                          specific_prompt += avoid_keywords_str # Append avoidance here too
+                                          # Add keyword/example avoidance to specific idea prompt
+                                          specific_prompt = config.SPECIFIC_IDEA_GENERATION_PROMPT_TEMPLATE.format(
+                                               selected_concept=concept, num_ideas=config.NUM_IDEAS_PER_CONCEPT,
+                                               avoid_keywords_section=avoid_keywords_str, avoid_examples_section=avoid_examples_str
+                                          )
                                           specific_idea_tasks.append(api_clients.call_gemini_api_async(session, specific_prompt))
                                      specific_idea_results = await asyncio.gather(*specific_idea_tasks, return_exceptions=True)
                                      for result_or_exc in specific_idea_results:
@@ -288,9 +296,13 @@ async def main():
                     elif explore: logging.info("Exploring with broader prompt.")
                     else: logging.info("No promising themes yet or exploring.")
 
-                    # Format the chosen base prompt with avoidance and positive themes
-                    generation_prompt = base_prompt_template.format(num_ideas=config.IDEAS_PER_BATCH, avoid_keywords_section=avoid_keywords_str)
-                    generation_prompt += positive_themes_str
+                    # Format the chosen base prompt with avoidance keywords and examples
+                    generation_prompt = base_prompt_template.format(
+                        num_ideas=config.IDEAS_PER_BATCH,
+                        avoid_keywords_section=avoid_keywords_str,
+                        avoid_examples_section=avoid_examples_str
+                    )
+                    generation_prompt += positive_themes_str # Append positive themes if applicable
 
                     initial_ideas = await generate_ideas(session, generation_prompt)
 
