@@ -7,24 +7,22 @@ import logging
 import re
 import sys
 import os
-import traceback # For failure email
-# Import modular components
+import traceback
 import config
 import api_clients
 import state_manager
 import analysis_utils
 import notifications
-# Import dependencies needed for main execution block check (if any)
 import nltk
 import sentence_transformers
 import numpy
-import sklearn # Check if sklearn is available
+import sklearn
 
 # --- Core Logic Functions ---
-# (Assume generate_ideas, get_search_queries, research_idea, extract_facts_for_rating, rate_idea, process_single_idea are present and correct)
+
 async def generate_ideas(session, full_prompt):
-    """Generates a batch of SaaS ideas using the Gemini API via api_clients."""
-    logging.info(f">>> Generating new SaaS ideas...")
+    """Generates a batch of SaaS idea names using the Gemini API."""
+    logging.info(f">>> Generating new SaaS idea names...")
     response_text = await api_clients.call_gemini_api_async(session, full_prompt)
     if not response_text: return []
     ideas = []
@@ -35,12 +33,41 @@ async def generate_ideas(session, full_prompt):
             if 0 < len(idea_name) < 200: ideas.append(idea_name)
             else: logging.warning(f"Ignoring potentially invalid idea name: '{idea_name}'")
         elif line.strip(): logging.warning(f"Ignoring unexpected line: '{line.strip()}'")
-    if not ideas: logging.warning("Could not parse any valid ideas from Gemini response.")
-    else: logging.info(f"Successfully parsed {len(ideas)} initial ideas.")
+    if not ideas: logging.warning("Could not parse any valid idea names from Gemini response.")
+    else: logging.info(f"Successfully parsed {len(ideas)} initial idea names.")
     return ideas
 
+async def generate_descriptions(session, idea_names):
+    """Generates descriptions for a list of idea names using Gemini."""
+    logging.info(f">>> Generating descriptions for {len(idea_names)} ideas...")
+    tasks = []
+    for name in idea_names:
+        prompt = config.IDEA_DESCRIPTION_PROMPT_TEMPLATE.format(idea_name=name)
+        tasks.append(api_clients.call_gemini_api_async(session, prompt))
+
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    descriptions = {}
+    for name, result_or_exc in zip(idea_names, results):
+        if isinstance(result_or_exc, Exception):
+            logging.error(f"Failed to generate description for '{name}': {result_or_exc}")
+            descriptions[name] = None
+        elif not result_or_exc:
+             logging.warning(f"Empty description returned for '{name}'.")
+             descriptions[name] = None
+        else:
+            desc = result_or_exc.strip().strip('"').strip("'")
+            if 0 < len(desc) < 500:
+                 descriptions[name] = desc
+                 logging.debug(f"Generated description for '{name}': {desc}")
+            else:
+                 logging.warning(f"Ignoring potentially invalid description for '{name}': {desc[:100]}...")
+                 descriptions[name] = None
+    logging.info(f"Finished generating descriptions (successful/failed): {len([d for d in descriptions.values() if d is not None])}/{len(descriptions)}")
+    return descriptions
+
+
 async def get_search_queries(session, idea_name):
-    """Generates targeted search queries for an idea using Gemini via api_clients."""
+    """Generates targeted search queries for an idea using Gemini."""
     logging.info(f"--- Generating search queries for: '{idea_name}' ---")
     prompt = config.SEARCH_QUERY_GENERATION_PROMPT_TEMPLATE.format(idea_name=idea_name)
     response_text = await api_clients.call_gemini_api_async(session, prompt)
@@ -48,8 +75,7 @@ async def get_search_queries(session, idea_name):
         queries = [q.strip() for q in response_text.split('\n') if q.strip()]
         if len(queries) == 3:
             logging.info(f"Generated queries: {queries}")
-            queries.append(f"{idea_name} review") # Add review query
-            return queries
+            queries.append(f"{idea_name} review"); return queries
     logging.warning(f"Failed to generate search queries for '{idea_name}'. Using defaults.")
     return [f"{idea_name} alternatives", f"{idea_name} pricing", f"{idea_name} market need", f"{idea_name} review"]
 
@@ -62,42 +88,27 @@ async def research_idea(session, idea_name):
     search_results_list = await asyncio.gather(*search_tasks, return_exceptions=True)
 
     for query, search_result_or_exc in zip(queries, search_results_list):
-        if isinstance(search_result_or_exc, Exception):
-            logging.error(f"Search task for query '{query}' failed: {search_result_or_exc}")
-            continue
+        if isinstance(search_result_or_exc, Exception): logging.error(f"Search task failed for '{query}': {search_result_or_exc}"); continue
         search_results = search_result_or_exc
         if not search_results: continue
 
         research_summary += f"\nSearch Results for '{query}':\n"
-        count = 0
-        results_list = []
+        count = 0; results_list = []
         provider = config.SEARCH_PROVIDER
-        try: # Add try-except for parsing robustness
-            if provider == "google" and 'items' in search_results:
-                results_list = search_results['items']
-                title_key, snippet_key, link_key = 'title', 'snippet', 'link'
-            elif provider == "serper" and 'organic' in search_results:
-                results_list = search_results['organic']
-                title_key, snippet_key, link_key = 'title', 'snippet', 'link'
-            elif provider == "brave" and 'web' in search_results and 'results' in search_results['web']:
-                results_list = search_results['web']['results']
-                title_key, snippet_key, link_key = 'title', 'description', 'url' # Verify these keys
-            else:
-                logging.warning(f"Unexpected search result structure from {provider} for query: '{query}'. Keys: {list(search_results.keys())}")
-                continue
+        try:
+            if provider == "google" and 'items' in search_results: results_list, keys = search_results['items'], ('title', 'snippet', 'link')
+            elif provider == "serper" and 'organic' in search_results: results_list, keys = search_results['organic'], ('title', 'snippet', 'link')
+            elif provider == "brave" and 'web' in search_results and 'results' in search_results['web']: results_list, keys = search_results['web']['results'], ('title', 'description', 'url')
+            else: logging.warning(f"Unexpected search structure from {provider} for '{query}'. Keys: {list(search_results.keys())}"); continue
 
             for result in results_list:
                 if count >= config.SEARCH_RESULTS_LIMIT: break
-                title = result.get(title_key, 'No Title')
-                snippet = result.get(snippet_key, 'No Snippet')
-                link = result.get(link_key, '#')
+                title, snippet, link = result.get(keys[0], 'N/A'), result.get(keys[1], 'N/A'), result.get(keys[2], '#')
                 entry = f"- {title}: {snippet} ({link})\n"
-                if len(research_summary) + len(entry) < config.MAX_SUMMARY_LENGTH:
-                     research_summary += entry; count += 1
+                if len(research_summary) + len(entry) < config.MAX_SUMMARY_LENGTH: research_summary += entry; count += 1
                 else: logging.warning("Research summary truncated."); break
             research_summary += "-" * 10 + "\n"
-        except Exception as parse_exc:
-             logging.error(f"Error parsing search results for query '{query}' from {provider}: {parse_exc}", exc_info=True)
+        except Exception as parse_exc: logging.error(f"Error parsing search results for '{query}' from {provider}: {parse_exc}", exc_info=True)
 
     logging.info(f"Research complete for '{idea_name}'. Summary length: {len(research_summary)}")
     return research_summary.strip()
@@ -148,7 +159,7 @@ async def rate_idea(session, idea_name, rating_context):
     logging.info(f"Received rating breakdown for '{idea_name}': {scores}. Weighted Score: {weighted_total:.1f}")
     return weighted_total, justifications
 
-async def process_single_idea(idea_name, idea_embedding, processed_ideas_set, session, semaphore, batch_stats):
+async def process_single_idea(idea_name, idea_description, idea_embedding, processed_ideas_set, session, semaphore, batch_stats):
     """Async function to research, extract facts, rate, and save state for a single idea."""
     async with semaphore:
         idea_lower = idea_name.lower()
@@ -178,7 +189,8 @@ async def process_single_idea(idea_name, idea_embedding, processed_ideas_set, se
             logging.error(f"Unexpected error processing idea '{idea_name}': {e}", exc_info=True)
             status = "error"; batch_stats['errors'] += 1
         finally:
-            state_manager.update_idea_state(idea_name, status, rating, justifications, embedding=idea_embedding)
+            # Store state including description and embedding
+            state_manager.update_idea_state(idea_name, status, rating, justifications, embedding=idea_embedding, description=idea_description)
             processed_ideas_set.add(idea_lower)
             batch_stats['processed'] += 1
 
@@ -223,11 +235,10 @@ async def main():
             else: logging.info(f"Initial explore ratio: {current_explore_ratio:.2f}")
 
             # --- Periodic Trend Analysis ---
-            # Force analysis on run 2 for testing by removing min_ideas check temporarily
             if run_count > 1 and (run_count - 1) % config.TREND_ANALYSIS_RUN_INTERVAL == 0:
                  high_rated_ideas_data = state_manager.get_high_rated_ideas(limit=100)
                  # Force run even if few ideas, get_combined_themes handles empty list
-                 logging.info(f"Forcing trend analysis with {len(high_rated_ideas_data)} high-rated ideas.") # Log before call
+                 logging.info(f"Forcing trend analysis with {len(high_rated_ideas_data)} high-rated ideas.")
                  promising_themes = analysis_utils.get_combined_themes(high_rated_ideas_data)
             elif run_count == 1:
                  promising_themes = []
@@ -238,31 +249,42 @@ async def main():
             generation_prompt = config.IDEA_GENERATION_PROMPT_TEMPLATE.format(num_ideas=config.IDEAS_PER_BATCH)
             low_rated_embeddings = state_manager.get_low_rated_embeddings(limit=200)
 
-            # --- Generate Initial Ideas ---
+            # --- Generate Initial Ideas & Descriptions ---
             initial_ideas = await generate_ideas(session, generation_prompt)
             if not initial_ideas: logging.warning("No initial ideas generated."); await asyncio.sleep(10); continue
+            idea_descriptions = await generate_descriptions(session, initial_ideas)
 
-            # --- Semantic Negative Feedback Filter ---
+            # --- Semantic Negative Feedback Filter (using Descriptions) ---
             ideas_after_neg_filter = []
             candidate_embeddings_dict = {}
-            if low_rated_embeddings:
-                logging.info("Applying semantic negative feedback filter...")
-                candidate_embeddings_list = analysis_utils.generate_embeddings(initial_ideas)
-                if candidate_embeddings_list and len(candidate_embeddings_list) == len(initial_ideas):
-                    for idea, embedding in zip(initial_ideas, candidate_embeddings_list):
-                        if not analysis_utils.check_similarity(embedding, low_rated_embeddings, config.NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD):
-                            ideas_after_neg_filter.append(idea)
-                            candidate_embeddings_dict[idea] = embedding
-                        else: logging.info(f"Filtered out '{idea}' due to similarity.")
+            texts_to_embed = [idea_descriptions.get(name) for name in initial_ideas if idea_descriptions.get(name)]
+            names_with_desc = [name for name in initial_ideas if idea_descriptions.get(name)]
+
+            if low_rated_embeddings and texts_to_embed:
+                logging.info("Applying semantic negative feedback filter based on descriptions...")
+                candidate_embeddings_list = analysis_utils.generate_embeddings(texts_to_embed)
+                if candidate_embeddings_list and len(candidate_embeddings_list) == len(texts_to_embed):
+                    temp_embeddings_dict = {name: emb for name, emb in zip(names_with_desc, candidate_embeddings_list)}
+                    for idea_name in initial_ideas:
+                        embedding = temp_embeddings_dict.get(idea_name)
+                        description = idea_descriptions.get(idea_name)
+                        if embedding and description:
+                            if not analysis_utils.check_similarity(embedding, low_rated_embeddings, config.NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD):
+                                ideas_after_neg_filter.append(idea_name)
+                                candidate_embeddings_dict[idea_name] = embedding
+                            else: logging.info(f"Filtered out '{idea_name}' due to description similarity.")
+                        elif description:
+                             ideas_after_neg_filter.append(idea_name)
+                             candidate_embeddings_dict[idea_name] = None
                     logging.info(f"{len(ideas_after_neg_filter)} ideas remaining after semantic filter.")
                 else:
                     logging.warning("Could not generate embeddings. Skipping semantic filter.")
                     ideas_after_neg_filter = initial_ideas
-                    candidate_embeddings_dict = {idea: None for idea in initial_ideas}
+                    candidate_embeddings_dict = {name: None for name in initial_ideas}
             else:
-                 logging.info("No low-rated embeddings found. Skipping semantic filter.")
+                 logging.info("No low-rated embeddings or no valid descriptions. Skipping semantic filter.")
                  ideas_after_neg_filter = initial_ideas
-                 candidate_embeddings_dict = {idea: None for idea in initial_ideas}
+                 candidate_embeddings_dict = {name: None for name in initial_ideas}
 
             # --- Self-Critique Step ---
             ideas = []
@@ -288,46 +310,46 @@ async def main():
             if not ideas: logging.warning("No ideas to process."); await asyncio.sleep(10); continue
             logging.info(f"Attempting to process {len(ideas)} final ideas.")
             final_idea_embeddings_map = {}
-            ideas_to_embed = []
+            ideas_to_embed_final = []
+            final_descriptions_map = {}
+
             for idea in ideas:
+                 final_descriptions_map[idea] = idea_descriptions.get(idea)
                  if idea in candidate_embeddings_dict and candidate_embeddings_dict[idea] is not None: final_idea_embeddings_map[idea] = candidate_embeddings_dict[idea]
-                 else: ideas_to_embed.append(idea)
-            if ideas_to_embed:
-                 logging.info(f"Generating embeddings for {len(ideas_to_embed)} ideas missing initial embedding.")
-                 new_embeddings = analysis_utils.generate_embeddings(ideas_to_embed)
-                 if new_embeddings and len(new_embeddings) == len(ideas_to_embed):
-                      for idea, embedding in zip(ideas_to_embed, new_embeddings): final_idea_embeddings_map[idea] = embedding
+                 elif final_descriptions_map[idea]: ideas_to_embed_final.append(final_descriptions_map[idea])
+                 else: final_idea_embeddings_map[idea] = None
+
+            if ideas_to_embed_final:
+                 logging.info(f"Generating embeddings for {len(ideas_to_embed_final)} final idea descriptions...")
+                 new_embeddings = analysis_utils.generate_embeddings(ideas_to_embed_final)
+                 names_needing_embedding = [idea for idea in ideas if idea not in final_idea_embeddings_map]
+                 if new_embeddings and len(new_embeddings) == len(names_needing_embedding):
+                      for name, embedding in zip(names_needing_embedding, new_embeddings): final_idea_embeddings_map[name] = embedding
                  else:
                       logging.error("Failed to generate embeddings for some final ideas.");
-                      for idea in ideas_to_embed: final_idea_embeddings_map[idea] = None
+                      for name in names_needing_embedding: final_idea_embeddings_map[name] = None
 
-            tasks = [asyncio.create_task(process_single_idea(idea, final_idea_embeddings_map.get(idea), processed_ideas_set, session, semaphore, batch_stats)) for idea in ideas if idea.lower() not in processed_ideas_set]
+            # Corrected create_task call with all arguments
+            tasks = [asyncio.create_task(process_single_idea(idea, final_descriptions_map.get(idea), final_idea_embeddings_map.get(idea), processed_ideas_set, session, semaphore, batch_stats)) for idea in ideas if idea.lower() not in processed_ideas_set]
 
             if not tasks: logging.warning("No new ideas to process after filtering processed.");
             else: logging.info(f"Created {len(tasks)} tasks for new ideas."); await asyncio.gather(*tasks)
 
             # --- Finish Run & Notify ---
-            batch_end_time = time.time()
-            batch_duration = batch_end_time - batch_start_time
+            batch_duration = time.time() - batch_start_time
             logging.info(f"===== Finished Run {run_count}/{config.MAX_RUNS} in {batch_duration:.2f} seconds =====")
-
-            # Explicitly check lengths/values for email condition
-            send_email_condition = config.ENABLE_EMAIL_NOTIFICATIONS and \
-                                   (len(batch_stats['saved_ideas']) > 0 or batch_stats['errors'] > 0)
+            send_email_condition = config.ENABLE_EMAIL_NOTIFICATIONS and (len(batch_stats['saved_ideas']) > 0 or batch_stats['errors'] > 0)
             logging.debug(f"Email condition check: Enabled={config.ENABLE_EMAIL_NOTIFICATIONS}, Saved>0={len(batch_stats['saved_ideas']) > 0}, Errors>0={batch_stats['errors'] > 0}. Result: {send_email_condition}")
             if send_email_condition:
-                logging.info(f"Condition met (Saved: {len(batch_stats['saved_ideas'])}, Errors: {batch_stats['errors']}), attempting to send summary email...") # More detailed log
+                logging.info(f"Condition met (Saved: {len(batch_stats['saved_ideas'])}, Errors: {batch_stats['errors']}), attempting to send summary email...")
                 email_subject = f"SaaS Automator Run {run_count} Summary"
                 email_body = f"Run {run_count} completed in {batch_duration:.2f}s.\nProcessed: {batch_stats['processed']}. Errors: {batch_stats['errors']}.\n"
                 if batch_stats['saved_ideas']: email_body += f"Saved {len(batch_stats['saved_ideas'])} ideas (Threshold: {config.RATING_THRESHOLD}):\n" + "\n".join([f"- {s}" for s in batch_stats['saved_ideas']])
                 else: email_body += "No new ideas met threshold."
                 notifications.send_summary_email(email_subject, email_body)
-            elif config.ENABLE_EMAIL_NOTIFICATIONS:
-                 logging.info("Skipping summary email: No saved ideas or errors this run.")
-
+            elif config.ENABLE_EMAIL_NOTIFICATIONS: logging.info("Skipping summary email: No saved ideas or errors this run.")
             status_message = f"Finished Run {run_count}. Processed {batch_stats['processed']}. Saved: {len(batch_stats['saved_ideas'])}. Errors: {batch_stats['errors']}."
             await api_clients.ping_uptime_kuma(session, message=status_message, ping_value=int(batch_duration))
-
             if run_count < config.MAX_RUNS: logging.info(f"--- Waiting {config.WAIT_BETWEEN_BATCHES}s ---"); await asyncio.sleep(config.WAIT_BETWEEN_BATCHES)
 
     logging.info("SaaS Idea Automator finished.")

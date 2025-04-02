@@ -1,9 +1,9 @@
 import sqlite3
 import logging
-import config # Import configuration for file paths
+import config
 import os
 import datetime
-import json # Needed for serializing justifications and embeddings
+import json
 
 DB_FILE = config.STATE_FILE
 
@@ -19,7 +19,7 @@ def _does_column_exist(cursor, table_name, column_name):
 def init_db(db_path=DB_FILE):
     """
     Initializes the SQLite database. Creates the table if it doesn't exist,
-    and adds missing columns ('justifications', 'embedding_json').
+    and adds missing columns ('justifications', 'embedding_json', 'description').
     """
     conn = None
     try:
@@ -63,6 +63,14 @@ def init_db(db_path=DB_FILE):
         else:
             logging.debug("Column 'embedding_json' already exists.")
 
+        # Step 4: Check/Add 'description' column
+        if not _does_column_exist(cursor, 'ideas', 'description'):
+            logging.warning("Column 'description' not found. Adding it...")
+            cursor.execute("ALTER TABLE ideas ADD COLUMN description TEXT;")
+            logging.info("Column 'description' added successfully.")
+        else:
+            logging.debug("Column 'description' already exists.")
+
         conn.commit()
         logging.info(f"Database '{db_path}' schema verified/updated successfully.")
 
@@ -98,21 +106,23 @@ def load_processed_ideas(db_path=DB_FILE):
         if conn: conn.close()
     return processed
 
-def update_idea_state(idea_name, status, rating=None, justifications=None, embedding=None, db_path=DB_FILE):
-    """Inserts or updates the state of an idea, including justifications and embedding."""
+def update_idea_state(idea_name, status, rating=None, justifications=None, embedding=None, description=None, db_path=DB_FILE):
+    """Inserts or updates the state of an idea, including justifications, embedding, and description."""
     conn = None
     idea_name_lower = idea_name.lower()
     timestamp = datetime.datetime.now().isoformat()
     justifications_json = json.dumps(justifications) if justifications else None
-    embedding_json = json.dumps(embedding) if embedding else None # Serialize embedding list to JSON
+    embedding_json = json.dumps(embedding) if embedding else None
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
+        # Use INSERT OR REPLACE to handle both new and existing ideas
+        # Add description to the query
         cursor.execute('''
             INSERT OR REPLACE INTO ideas
-            (idea_name_lower, original_idea_name, status, rating, justifications, embedding_json, processed_timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (idea_name_lower, idea_name, status, rating, justifications_json, embedding_json, timestamp))
+            (idea_name_lower, original_idea_name, description, status, rating, justifications, embedding_json, processed_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (idea_name_lower, idea_name, description, status, rating, justifications_json, embedding_json, timestamp))
         conn.commit()
         logging.debug(f"Updated state for idea '{idea_name}' to status '{status}'")
     except sqlite3.Error as e:
@@ -129,60 +139,66 @@ def get_low_rated_embeddings(threshold=4.0, limit=100, db_path=DB_FILE):
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ideas';")
         if cursor.fetchone():
-            # Check if embedding column exists before querying it
             if _does_column_exist(cursor, 'ideas', 'embedding_json'):
                 cursor.execute('''
                     SELECT embedding_json FROM ideas
-                    WHERE status IN ('rated', 'saved', 'error', 'rating_failed') -- Consider all processed low-rated
+                    WHERE status IN ('rated', 'saved', 'error', 'rating_failed')
                     AND rating IS NOT NULL AND rating < ?
-                    AND embedding_json IS NOT NULL -- Only get those with embeddings
+                    AND embedding_json IS NOT NULL
                     ORDER BY processed_timestamp DESC
                     LIMIT ?
                 ''', (threshold, limit))
                 rows = cursor.fetchall()
                 for row in rows:
                     try:
-                        # Deserialize JSON string back to list
                         embedding_list = json.loads(row[0])
-                        if isinstance(embedding_list, list):
-                            embeddings.append(embedding_list)
-                    except (json.JSONDecodeError, TypeError):
-                        logging.warning(f"Could not decode embedding JSON for a low-rated idea: {row[0][:50]}...")
-            else:
-                 logging.warning("Cannot get low-rated embeddings: 'embedding_json' column not found.")
-        else:
-            logging.warning("Cannot get low-rated embeddings: 'ideas' table not found.")
-    except sqlite3.Error as e:
-        logging.error(f"Error retrieving low-rated embeddings from '{db_path}': {e}")
+                        if isinstance(embedding_list, list): embeddings.append(embedding_list)
+                    except (json.JSONDecodeError, TypeError): logging.warning(f"Could not decode embedding JSON: {row[0][:50]}...")
+            else: logging.warning("Cannot get low-rated embeddings: 'embedding_json' column not found.")
+        else: logging.warning("Cannot get low-rated embeddings: 'ideas' table not found.")
+    except sqlite3.Error as e: logging.error(f"Error retrieving low-rated embeddings from '{db_path}': {e}")
     finally:
         if conn: conn.close()
     logging.info(f"Retrieved {len(embeddings)} embeddings for low-rated ideas.")
     return embeddings
 
-
 def get_high_rated_ideas(threshold=config.RATING_THRESHOLD, limit=50, db_path=DB_FILE):
-    """Retrieves high-rated ideas (name and rating) for trend analysis."""
-    ideas_with_ratings = []
+    """Retrieves high-rated ideas (name, description, rating, embedding) for trend analysis."""
+    ideas_data = []
     conn = None
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ideas';")
         if cursor.fetchone():
-            cursor.execute('''
-                SELECT original_idea_name, rating FROM ideas
-                WHERE status = 'saved' -- Focus trends on ideas that met the final threshold
+            # Check if needed columns exist
+            has_desc = _does_column_exist(cursor, 'ideas', 'description')
+            has_embed = _does_column_exist(cursor, 'ideas', 'embedding_json')
+            select_cols = "original_idea_name, rating"
+            if has_desc: select_cols += ", description"
+            if has_embed: select_cols += ", embedding_json"
+
+            cursor.execute(f'''
+                SELECT {select_cols} FROM ideas
+                WHERE status = 'saved'
                 AND rating IS NOT NULL AND rating >= ?
                 ORDER BY rating DESC, processed_timestamp DESC
                 LIMIT ?
             ''', (threshold, limit))
             rows = cursor.fetchall()
-            ideas_with_ratings = [{"name": row[0], "rating": row[1]} for row in rows]
+            for row in rows:
+                 data = {"name": row[0], "rating": row[1]}
+                 col_index = 2
+                 if has_desc: data["description"] = row[col_index]; col_index += 1
+                 if has_embed:
+                      try: data["embedding"] = json.loads(row[col_index]) if row[col_index] else None
+                      except (json.JSONDecodeError, TypeError): data["embedding"] = None
+                 ideas_data.append(data)
         else: logging.warning("Cannot get high-rated ideas: 'ideas' table not found.")
     except sqlite3.Error as e: logging.error(f"Error retrieving high-rated ideas from '{db_path}': {e}")
     finally:
         if conn: conn.close()
-    return ideas_with_ratings
+    return ideas_data
 
 def get_recent_ratings(limit=50, db_path=DB_FILE):
     """Retrieves the ratings of the most recently processed ideas."""

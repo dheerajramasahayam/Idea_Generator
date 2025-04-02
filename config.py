@@ -41,8 +41,8 @@ EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = float(os.environ.get("NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD", 0.85))
 
 # --- Trend Analysis Settings ---
-TREND_ANALYSIS_MIN_IDEAS = int(os.environ.get("TREND_ANALYSIS_MIN_IDEAS", 10)) # Min high-rated ideas needed
-TREND_ANALYSIS_RUN_INTERVAL = int(os.environ.get("TREND_ANALYSIS_RUN_INTERVAL", 5)) # How often to run analysis
+TREND_ANALYSIS_MIN_IDEAS = int(os.environ.get("TREND_ANALYSIS_MIN_IDEAS", 10))
+TREND_ANALYSIS_RUN_INTERVAL = int(os.environ.get("TREND_ANALYSIS_RUN_INTERVAL", 5))
 TREND_NGRAM_COUNT = int(os.environ.get("TREND_NGRAM_COUNT", 3))
 TREND_LDA_TOPICS = int(os.environ.get("TREND_LDA_TOPICS", 3))
 TREND_LDA_WORDS = int(os.environ.get("TREND_LDA_WORDS", 3))
@@ -57,17 +57,17 @@ try:
     DELAY_BETWEEN_IDEAS = int(os.environ.get("DELAY_BETWEEN_IDEAS", 5))
     MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", 1))
     MAX_SUMMARY_LENGTH = int(os.environ.get("MAX_SUMMARY_LENGTH", 2500))
-    MAX_RUNS = int(os.environ.get("MAX_RUNS", 999999)) # Default for continuous running
+    MAX_RUNS = int(os.environ.get("MAX_RUNS", 1)) # Limit to 1 run for testing description generation
     WAIT_BETWEEN_BATCHES = int(os.environ.get("WAIT_BETWEEN_BATCHES", 10))
     EXPLORE_RATIO = float(os.environ.get("EXPLORE_RATIO", 0.2))
     SMTP_PORT = int(SMTP_PORT)
 except ValueError as e:
     logging.error(f"Error parsing numeric config: {e}. Using defaults.")
-    IDEAS_PER_BATCH = 10; RATING_THRESHOLD = 9.0; SEARCH_RESULTS_LIMIT = 10 # Production threshold
+    IDEAS_PER_BATCH = 10; RATING_THRESHOLD = 9.0; SEARCH_RESULTS_LIMIT = 10
     DELAY_BETWEEN_IDEAS = 5; MAX_CONCURRENT_TASKS = 1; MAX_SUMMARY_LENGTH = 2500
-    MAX_RUNS = 999999; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2 # Continuous run default
+    MAX_RUNS = 1; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2 # Limit to 1 run
     SMTP_PORT = 587; NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = 0.85
-    TREND_ANALYSIS_MIN_IDEAS = 10; TREND_ANALYSIS_RUN_INTERVAL = 5 # Production trend settings
+    TREND_ANALYSIS_MIN_IDEAS = 10; TREND_ANALYSIS_RUN_INTERVAL = 5
     TREND_NGRAM_COUNT = 3; TREND_LDA_TOPICS = 3; TREND_LDA_WORDS = 3
     TREND_CLUSTER_COUNT = 3; TREND_CLUSTER_THEMES_PER_CLUSTER = 1
 
@@ -82,7 +82,6 @@ else: num_criteria = len(RATING_WEIGHTS); RATING_WEIGHTS = {k: 1.0 / num_criteri
 OUTPUT_FILE = "gemini_rated_ideas.md"; STATE_FILE = "ideas_state.db"; LOG_FILE = "automator.log"
 
 # --- Prompts ---
-# (Keep existing prompts)
 IDEA_GENERATION_PROMPT_TEMPLATE = """
 Generate {num_ideas} unique SaaS ideas focused on B2B or prosumer niches with potential for day-1 revenue.
 Focus on enhancing existing platforms (like Shopify, Bubble, Webflow, Airtable), niche data aggregation, or freelancer/agency automation.
@@ -92,6 +91,12 @@ Output only a numbered list of concise idea names, each on a new line. Do not in
 Example:
 1. Idea Name One
 2. Idea Name Two
+"""
+
+IDEA_DESCRIPTION_PROMPT_TEMPLATE = """
+For the following SaaS idea name, write a concise 1-2 sentence description explaining its core value proposition. Focus on the problem it solves and for whom. Output only the description text.
+
+SaaS Idea Name: {idea_name}
 """
 
 SEARCH_QUERY_GENERATION_PROMPT_TEMPLATE = """
