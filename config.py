@@ -1,6 +1,7 @@
 import os
 import logging
-import json # Import json library
+import json
+import random
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -50,15 +51,28 @@ TREND_LDA_WORDS = int(os.environ.get("TREND_LDA_WORDS", 3))
 TREND_CLUSTER_COUNT = int(os.environ.get("TREND_CLUSTER_COUNT", 3))
 TREND_CLUSTER_THEMES_PER_CLUSTER = int(os.environ.get("TREND_CLUSTER_THEMES_PER_CLUSTER", 1))
 
+# --- Idea Variation Settings ---
+ENABLE_VARIATION_GENERATION = os.environ.get("ENABLE_VARIATION_GENERATION", "true").lower() == "true"
+VARIATION_GENERATION_PROBABILITY = float(os.environ.get("VARIATION_GENERATION_PROBABILITY", 0.25))
+VARIATION_SOURCE_MIN_RATING = float(os.environ.get("VARIATION_SOURCE_MIN_RATING", 7.0))
+VARIATION_SOURCE_MAX_RATING = float(os.environ.get("VARIATION_SOURCE_MAX_RATING", 8.9))
+NUM_VARIATIONS_TO_GENERATE = int(os.environ.get("NUM_VARIATIONS_TO_GENERATE", 5))
+
+# --- Multi-Step Generation Settings ---
+ENABLE_MULTI_STEP_GENERATION = os.environ.get("ENABLE_MULTI_STEP_GENERATION", "false").lower() == "true" # Default false
+NUM_CONCEPTS_TO_GENERATE = int(os.environ.get("NUM_CONCEPTS_TO_GENERATE", 5))
+NUM_CONCEPTS_TO_SELECT = int(os.environ.get("NUM_CONCEPTS_TO_SELECT", 2))
+NUM_IDEAS_PER_CONCEPT = int(os.environ.get("NUM_IDEAS_PER_CONCEPT", 5))
+
 # --- Script Parameters ---
 try:
-    IDEAS_PER_BATCH = int(os.environ.get("IDEAS_PER_BATCH", 10))
-    RATING_THRESHOLD = float(os.environ.get("RATING_THRESHOLD", 9.0)) # Production threshold
+    IDEAS_PER_BATCH = int(os.environ.get("IDEAS_PER_BATCH", 10)) # Used if multi-step/variation disabled
+    RATING_THRESHOLD = float(os.environ.get("RATING_THRESHOLD", 9.0))
     SEARCH_RESULTS_LIMIT = int(os.environ.get("SEARCH_RESULTS_LIMIT", 10))
     DELAY_BETWEEN_IDEAS = int(os.environ.get("DELAY_BETWEEN_IDEAS", 5))
     MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", 1))
     MAX_SUMMARY_LENGTH = int(os.environ.get("MAX_SUMMARY_LENGTH", 2500))
-    MAX_RUNS = int(os.environ.get("MAX_RUNS", 1)) # Limit to 1 run for testing prompt loading
+    MAX_RUNS = int(os.environ.get("MAX_RUNS", 1)) # Limit to 1 run for testing
     WAIT_BETWEEN_BATCHES = int(os.environ.get("WAIT_BETWEEN_BATCHES", 10))
     EXPLORE_RATIO = float(os.environ.get("EXPLORE_RATIO", 0.2))
     SMTP_PORT = int(SMTP_PORT)
@@ -71,6 +85,9 @@ except ValueError as e:
     TREND_ANALYSIS_MIN_IDEAS = 10; TREND_ANALYSIS_RUN_INTERVAL = 5
     TREND_NGRAM_COUNT = 3; TREND_LDA_TOPICS = 3; TREND_LDA_WORDS = 3
     TREND_CLUSTER_COUNT = 3; TREND_CLUSTER_THEMES_PER_CLUSTER = 1
+    VARIATION_GENERATION_PROBABILITY = 0.25; VARIATION_SOURCE_MIN_RATING = 7.0
+    VARIATION_SOURCE_MAX_RATING = 8.9; NUM_VARIATIONS_TO_GENERATE = 5
+    NUM_CONCEPTS_TO_GENERATE = 5; NUM_CONCEPTS_TO_SELECT = 2; NUM_IDEAS_PER_CONCEPT = 5
 
 
 # --- Rating Weights ---
@@ -81,7 +98,7 @@ else: num_criteria = len(RATING_WEIGHTS); RATING_WEIGHTS = {k: 1.0 / num_criteri
 
 # --- File Paths ---
 OUTPUT_FILE = "gemini_rated_ideas.md"; STATE_FILE = "ideas_state.db"; LOG_FILE = "automator.log"
-PROMPT_FILE = "prompts.json" # Define path for prompts file
+PROMPT_FILE = "prompts.json"
 
 # --- Load Prompts from JSON ---
 try:
@@ -98,30 +115,42 @@ except Exception as e:
      logging.error(f"Unexpected error loading prompts from '{PROMPT_FILE}': {e}. Using empty prompts.")
      _prompts = {}
 
-# Assign prompts to variables, using .get() with default empty string
-IDEA_GENERATION_PROMPT_TEMPLATE = _prompts.get("IDEA_GENERATION", "")
+# Assign prompts to variables
+IDEA_GENERATION_PROMPT_TEMPLATES = [
+    _prompts.get("IDEA_GENERATION_GENERAL", ""), _prompts.get("IDEA_GENERATION_PLATFORM", ""),
+    _prompts.get("IDEA_GENERATION_DATA", ""), _prompts.get("IDEA_GENERATION_AI", "")
+]
+IDEA_GENERATION_PROMPT_TEMPLATES = [p for p in IDEA_GENERATION_PROMPT_TEMPLATES if p]
+if not IDEA_GENERATION_PROMPT_TEMPLATES:
+     logging.error("No valid IDEA_GENERATION prompts loaded!"); IDEA_GENERATION_PROMPT_TEMPLATES = ["Generate {num_ideas} SaaS ideas."]
+
 IDEA_DESCRIPTION_PROMPT_TEMPLATE = _prompts.get("IDEA_DESCRIPTION", "")
+IDEA_VARIATION_PROMPT_TEMPLATE = _prompts.get("IDEA_VARIATION", "")
 SEARCH_QUERY_GENERATION_PROMPT_TEMPLATE = _prompts.get("SEARCH_QUERY_GENERATION", "")
 FACT_EXTRACTION_PROMPT_TEMPLATE = _prompts.get("FACT_EXTRACTION", "")
 RATING_PROMPT_TEMPLATE = _prompts.get("RATING", "")
 SELF_CRITIQUE_PROMPT_TEMPLATE = _prompts.get("SELF_CRITIQUE", "")
+# New Multi-Step Prompts
+CONCEPT_GENERATION_PROMPT_TEMPLATE = _prompts.get("CONCEPT_GENERATION", "")
+CONCEPT_SELECTION_PROMPT_TEMPLATE = _prompts.get("CONCEPT_SELECTION", "")
+SPECIFIC_IDEA_GENERATION_PROMPT_TEMPLATE = _prompts.get("SPECIFIC_IDEA_GENERATION", "")
+
 
 # --- Validation ---
 def validate_config():
     """Checks if essential API keys, prompts, and required email settings are loaded."""
     valid = True
-    # Check Search Provider
     if not SEARCH_PROVIDER: logging.error("No valid Search API provider configured."); valid = False
     elif SEARCH_PROVIDER == "google" and (not GOOGLE_API_KEY or not GOOGLE_CSE_ID): logging.error("Google Search keys missing."); valid = False
     elif SEARCH_PROVIDER == "serper" and not SERPER_API_KEY: logging.error("Serper Search key missing."); valid = False
     elif SEARCH_PROVIDER == "brave" and not BRAVE_API_KEY: logging.error("Brave Search key missing."); valid = False
-    # Check Gemini Key
     if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY": logging.error("GEMINI_API_KEY missing."); valid = False
-    # Check Prompts
-    if not all([IDEA_GENERATION_PROMPT_TEMPLATE, IDEA_DESCRIPTION_PROMPT_TEMPLATE, SEARCH_QUERY_GENERATION_PROMPT_TEMPLATE, FACT_EXTRACTION_PROMPT_TEMPLATE, RATING_PROMPT_TEMPLATE, SELF_CRITIQUE_PROMPT_TEMPLATE]):
-         logging.error("One or more prompt templates failed to load from prompts.json.")
-         valid = False
-    # Check Email Settings if Enabled
+    if not IDEA_GENERATION_PROMPT_TEMPLATES: logging.error("No IDEA_GENERATION prompts loaded."); valid = False
+    if not all([IDEA_DESCRIPTION_PROMPT_TEMPLATE, SEARCH_QUERY_GENERATION_PROMPT_TEMPLATE, FACT_EXTRACTION_PROMPT_TEMPLATE, RATING_PROMPT_TEMPLATE, SELF_CRITIQUE_PROMPT_TEMPLATE]):
+         logging.error("One or more essential prompt templates failed to load."); valid = False
+    if ENABLE_VARIATION_GENERATION and not IDEA_VARIATION_PROMPT_TEMPLATE: logging.error("Variation generation enabled, but prompt missing."); valid = False
+    if ENABLE_MULTI_STEP_GENERATION and not all([CONCEPT_GENERATION_PROMPT_TEMPLATE, CONCEPT_SELECTION_PROMPT_TEMPLATE, SPECIFIC_IDEA_GENERATION_PROMPT_TEMPLATE]):
+         logging.error("Multi-step generation enabled, but prompts missing."); valid = False
     if ENABLE_EMAIL_NOTIFICATIONS:
         logging.info("Email notifications enabled. Validating SMTP settings...")
         email_valid = True
@@ -133,7 +162,6 @@ def validate_config():
         try: int(SMTP_PORT)
         except (ValueError, TypeError): logging.error(f"Invalid SMTP_PORT: {SMTP_PORT}."); email_valid = False
         if not email_valid: valid = False
-    # Check Embedding Model
     if EMBEDDING_MODEL == "all-MiniLM-L6-v2": logging.info(f"Using default embedding model: {EMBEDDING_MODEL}")
     else: logging.info(f"Using embedding model from env: {EMBEDDING_MODEL}")
     return valid

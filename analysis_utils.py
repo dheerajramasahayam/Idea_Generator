@@ -109,6 +109,26 @@ def generate_ngrams(tokens, n):
          if len(tokens) < n: return []
          return [" ".join(tokens[i:i+n]) for i in range(len(tokens)-n+1)]
 
+def extract_keywords(texts, top_n=15):
+    """Extracts top N keywords from a list of texts."""
+    if not texts: return []
+    logging.info(f"Extracting top {top_n} keywords from {len(texts)} texts...")
+    all_tokens = []
+    for text in texts:
+        tokens = tokenize_and_clean(text)
+        if tokens:
+            all_tokens.extend(tokens)
+    if not all_tokens: logging.warning("Keyword Extraction: No meaningful tokens found."); return []
+    counts = Counter(all_tokens)
+    # Optionally filter keywords appearing only once? For avoidance, maybe keep them.
+    # filtered = {f: c for f, c in counts.items() if c > 1}
+    # if not filtered: filtered = counts
+    sorted_keywords = sorted(counts.items(), key=lambda item: item[1], reverse=True)
+    keywords = [kw for kw, count in sorted_keywords[:top_n]]
+    logging.info(f"Extracted keywords for avoidance: {keywords}")
+    return keywords
+
+
 def get_promising_ngrams(texts_to_analyze, top_n=3):
     """Analyzes texts (names or descriptions) using N-grams and returns top themes."""
     if not texts_to_analyze: return []
@@ -138,16 +158,13 @@ def get_lda_topics(texts_to_analyze, num_topics=3, num_words=3):
         processed_docs = [" ".join(tokenize_and_clean(text)) for text in texts_to_analyze if tokenize_and_clean(text)]
         if len(processed_docs) < num_topics:
              logging.warning(f"LDA: Not enough valid documents ({len(processed_docs)}) for {num_topics} topics."); return []
-
         vectorizer = CountVectorizer(max_df=0.95, min_df=1, stop_words='english')
         dtm = vectorizer.fit_transform(processed_docs)
         if dtm.shape[1] == 0: logging.warning("LDA: Vocabulary is empty after vectorization."); return []
-
         feature_names = vectorizer.get_feature_names_out()
         actual_num_topics = min(num_topics, dtm.shape[1])
         if actual_num_topics != num_topics: logging.warning(f"LDA: Reduced topics to {actual_num_topics}.")
         if actual_num_topics == 0: return []
-
         lda = LatentDirichletAllocation(n_components=actual_num_topics, max_iter=10, learning_method='online', random_state=42)
         lda.fit(dtm)
         topics = []
@@ -167,25 +184,21 @@ def get_cluster_themes(idea_embeddings, idea_texts, num_clusters=3, themes_per_c
     if not SKLEARN_AVAILABLE: logging.warning("Clustering disabled: scikit-learn not installed."); return []
     if not idea_embeddings or len(idea_embeddings) < num_clusters:
         logging.warning(f"Clustering: Not enough embeddings ({len(idea_embeddings)}) for {num_clusters} clusters."); return []
-    if len(idea_embeddings) != len(idea_texts):
-         logging.error("Clustering error: Mismatch between number of embeddings and texts."); return []
-
+    if len(idea_embeddings) != len(idea_texts): logging.error("Clustering error: Mismatch between embeddings and texts."); return []
     logging.info(f"Analyzing {len(idea_embeddings)} embeddings using K-Means clustering (k={num_clusters})...")
     try:
         embeddings_array = np.array(idea_embeddings)
         actual_num_clusters = min(num_clusters, len(idea_embeddings))
         if actual_num_clusters != num_clusters: logging.warning(f"Clustering: Reduced clusters to {actual_num_clusters}.")
-
         kmeans = KMeans(n_clusters=actual_num_clusters, random_state=42, n_init=10)
         kmeans.fit(embeddings_array)
         labels = kmeans.labels_
-        cluster_texts = {i: [] for i in range(actual_num_clusters)} # Store texts per cluster
+        cluster_texts = {i: [] for i in range(actual_num_clusters)}
         for i, label in enumerate(labels): cluster_texts[label].append(idea_texts[i])
         cluster_sizes = Counter(labels); logging.debug(f"Cluster sizes: {cluster_sizes}")
         cluster_themes = []
         for i in range(actual_num_clusters):
             if i in cluster_texts and cluster_texts[i]:
-                 # Extract N-grams from the texts within this cluster
                  cluster_ngrams = get_promising_ngrams(cluster_texts[i], top_n=themes_per_cluster)
                  cluster_themes.extend(cluster_ngrams)
         unique_themes = list(set(cluster_themes))
@@ -199,23 +212,14 @@ def get_combined_themes(high_rated_ideas_data):
     if not high_rated_ideas_data or len(high_rated_ideas_data) < config.TREND_ANALYSIS_MIN_IDEAS:
         logging.info(f"Not enough high-rated ideas ({len(high_rated_ideas_data)}/{config.TREND_ANALYSIS_MIN_IDEAS}) for combined trend analysis.")
         return []
-
     logging.info("Performing combined trend analysis (N-grams, LDA, Clustering) on descriptions...")
-    # Use descriptions if available, otherwise fallback to names
     texts_for_analysis = [item.get('description', item.get('name')) for item in high_rated_ideas_data if item.get('description') or item.get('name')]
-    # Retrieve stored embeddings (which should be description embeddings)
     idea_embeddings = [item.get('embedding') for item in high_rated_ideas_data if item.get('embedding')]
-    # Filter texts to match available embeddings for clustering
     texts_with_embeddings = [item.get('description', item.get('name')) for item in high_rated_ideas_data if item.get('embedding')]
-
-
-    if not texts_for_analysis:
-         logging.warning("No text found (names or descriptions) in high-rated ideas for trend analysis.")
-         return []
+    if not texts_for_analysis: logging.warning("No text found for trend analysis."); return []
 
     ngram_themes = get_promising_ngrams(texts_for_analysis, top_n=config.TREND_NGRAM_COUNT)
     lda_themes = get_lda_topics(texts_for_analysis, num_topics=config.TREND_LDA_TOPICS, num_words=config.TREND_LDA_WORDS)
-    # Pass texts corresponding to the embeddings for cluster theme extraction
     cluster_themes = get_cluster_themes(idea_embeddings, texts_with_embeddings, num_clusters=config.TREND_CLUSTER_COUNT, themes_per_cluster=config.TREND_CLUSTER_THEMES_PER_CLUSTER)
 
     combined = set(ngram_themes) | set(lda_themes) | set(cluster_themes)
@@ -230,7 +234,6 @@ def generate_embeddings(texts):
     try:
         logging.debug(f"Generating embeddings for {len(texts)} texts using device: {embedding_model.device}...")
         if not isinstance(texts, (list, tuple)): texts = [texts]
-        # Ensure all items are strings
         texts = [str(t) if t is not None else "" for t in texts]
         embeddings = embedding_model.encode(texts, convert_to_tensor=False)
         embeddings_list = [emb.tolist() for emb in embeddings]

@@ -21,27 +21,26 @@ async def call_gemini_api_async(session, prompt):
     headers = {'Content-Type': 'application/json'}
     payload = json.dumps({"contents": [{"parts": [{"text": prompt}]}]})
     max_retries = 3
-    base_delay = 2 # Start with slightly longer base delay for Gemini
+    base_delay = 2
 
     for attempt in range(max_retries):
         try:
-            async with session.post(api_url, headers=headers, data=payload, timeout=45) as response: # Longer timeout
+            async with session.post(api_url, headers=headers, data=payload, timeout=45) as response:
                 status = response.status
-                if status == 429: # Rate limit
-                    retry_after = int(response.headers.get("Retry-After", base_delay * (3 ** attempt))) # Use header if available, else longer exponential
+                if status == 429:
+                    retry_after = int(response.headers.get("Retry-After", base_delay * (3 ** attempt)))
                     logging.warning(f"Gemini API attempt {attempt + 1} failed: Rate limit (429). Retrying after {retry_after}s...")
                     await asyncio.sleep(retry_after + random.uniform(0, 1))
-                    continue # Go to next attempt
-                elif status >= 500: # Server errors
+                    continue
+                elif status >= 500:
                     logging.warning(f"Gemini API attempt {attempt + 1} failed with status {status}. Retrying...")
                     delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
                     await asyncio.sleep(delay)
-                    continue # Go to next attempt
+                    continue
 
-                response.raise_for_status() # Raise for other client errors (4xx)
+                response.raise_for_status()
                 response_data = await response.json()
 
-                # Parse response
                 if 'candidates' in response_data and response_data['candidates']:
                     content = response_data['candidates'][0].get('content')
                     if content and 'parts' in content and content['parts']:
@@ -50,14 +49,13 @@ async def call_gemini_api_async(session, prompt):
                             logging.info("Gemini API call successful.")
                             return text_response.strip()
 
-                # Handle blocks or unexpected structure
                 block_reason = response_data.get('promptFeedback', {}).get('blockReason')
                 if block_reason:
                     logging.warning(f"Gemini API blocked prompt. Reason: {block_reason}")
-                    return None # Don't retry blocked prompts
+                    return None
                 else:
                     logging.error(f"Unexpected Gemini response structure: {response_data}")
-                    return None # Don't retry if structure is wrong
+                    return None
 
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as e:
             logging.error(f"Gemini API call attempt {attempt + 1} failed: {e}")
@@ -65,14 +63,10 @@ async def call_gemini_api_async(session, prompt):
                 logging.error("Max retries reached for Gemini API.")
                 return None
 
-            # --- Smarter Retry Delay for 429 ---
-            delay = base_delay * (2 ** attempt) # Default exponential backoff
+            delay = base_delay * (2 ** attempt)
             if isinstance(e, aiohttp.ClientResponseError) and e.status == 429:
                 try:
-                    # Attempt to parse retryDelay from the error message/body
-                    # Note: Accessing e.message might not always work depending on aiohttp version/error details
-                    # A more robust way might involve reading the response body before raising status
-                    error_body = await e.text() # Try reading body
+                    error_body = await e.text()
                     error_data = json.loads(error_body)
                     if isinstance(error_data, dict) and 'error' in error_data and 'details' in error_data['error']:
                         for detail in error_data['error']['details']:
@@ -84,92 +78,71 @@ async def call_gemini_api_async(session, prompt):
                                          delay = max(delay_seconds, base_delay)
                                          logging.info(f"Using API suggested retry delay: {delay}s")
                                          break
-                                     except ValueError:
-                                         logging.warning(f"Could not parse seconds from retryDelay: {retry_delay_str}")
+                                     except ValueError: logging.warning(f"Could not parse seconds from retryDelay: {retry_delay_str}")
                 except (json.JSONDecodeError, KeyError, IndexError, TypeError, AttributeError) as parse_error:
-                     logging.warning(f"Could not parse RetryInfo from 429 error details: {parse_error}. Falling back to exponential backoff.")
-            # --- End Smarter Retry Delay ---
+                     logging.warning(f"Could not parse RetryInfo from 429 error details: {parse_error}. Falling back.")
 
             delay_with_jitter = delay + random.uniform(0, 1)
             logging.info(f"Retrying Gemini API in {delay_with_jitter:.2f} seconds...")
             await asyncio.sleep(delay_with_jitter)
     return None
 
+async def generate_variation_ideas_async(session, variation_prompt):
+    """Generates variations of an idea using the Gemini API."""
+    logging.info(">>> Generating variation ideas...")
+    # This function simply calls the main Gemini API function
+    # The specific parsing logic for variations will be handled in the main script
+    return await call_gemini_api_async(session, variation_prompt)
+
+
 async def call_search_api_async(session, query):
-    """
-    Calls the configured search API (Brave, Serper, or Google) asynchronously.
-    Requires the corresponding API key to be set in config/.env.
-    """
+    """Calls the configured search API (Brave, Serper, or Google) asynchronously."""
     provider = config.SEARCH_PROVIDER
     logging.info(f"--- Searching via {provider.upper()} API for: '{query}' ---")
 
+    url, params, headers, payload, api_name = None, None, None, None, None
+
     if provider == "brave":
-        # --- Brave Search API Implementation ---
-        if not config.BRAVE_API_KEY or config.BRAVE_API_KEY == "YOUR_BRAVE_API_KEY":
-            logging.error("Brave API key missing or not configured.")
-            return None
-        # !!! ASSUMPTION: Endpoint and parameters - VERIFY WITH BRAVE DOCS !!!
+        if not config.BRAVE_API_KEY or config.BRAVE_API_KEY == "YOUR_BRAVE_API_KEY": logging.error("Brave API key missing."); return None
         url = "https://api.search.brave.com/res/v1/web/search"
         params = {'q': query, 'count': config.SEARCH_RESULTS_LIMIT}
-        headers = {
-            'Accept': 'application/json',
-            'Accept-Encoding': 'gzip',
-            'X-Subscription-Token': config.BRAVE_API_KEY
-        }
+        headers = {'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': config.BRAVE_API_KEY}
         api_name = "Brave Search"
-
     elif provider == "serper":
-        # --- Serper API Implementation ---
-        if not config.SERPER_API_KEY or config.SERPER_API_KEY == "YOUR_SERPER_API_KEY":
-            logging.error("Serper API key missing or not configured.")
-            return None
+        if not config.SERPER_API_KEY or config.SERPER_API_KEY == "YOUR_SERPER_API_KEY": logging.error("Serper API key missing."); return None
         url = "https://google.serper.dev/search"
         headers = {'X-API-KEY': config.SERPER_API_KEY, 'Content-Type': 'application/json'}
         payload = json.dumps({'q': query, 'num': config.SEARCH_RESULTS_LIMIT})
-        params = None # Serper uses payload
         api_name = "Serper"
-
     elif provider == "google":
-        # --- Google Custom Search API Implementation ---
-        if not config.GOOGLE_API_KEY or config.GOOGLE_API_KEY == "YOUR_GOOGLE_API_KEY" or \
-           not config.GOOGLE_CSE_ID or config.GOOGLE_CSE_ID == "YOUR_GOOGLE_CSE_ID":
-            logging.error("Google Search API key or CSE ID missing.")
-            return None
+        if not config.GOOGLE_API_KEY or not config.GOOGLE_CSE_ID: logging.error("Google Search API key or CSE ID missing."); return None
         url = "https://www.googleapis.com/customsearch/v1"
         params = {'key': config.GOOGLE_API_KEY, 'cx': config.GOOGLE_CSE_ID, 'q': query, 'num': config.SEARCH_RESULTS_LIMIT}
-        headers = None
         api_name = "Google Custom Search"
-
     else:
-        logging.error("No valid search provider configured.")
-        return None
+        logging.error("No valid search provider configured."); return None
 
-    max_retries = 3
-    base_delay = 1
-
+    max_retries = 3; base_delay = 1
     for attempt in range(max_retries):
         try:
             request_args = {'params': params} if params else {'data': payload}
             async with session.get(url, headers=headers, timeout=15, **request_args) as response:
                 status = response.status
-                if status == 429: # Rate limit
+                if status == 429:
                     retry_after = int(response.headers.get("Retry-After", base_delay * (3 ** attempt)))
                     logging.warning(f"{api_name} API attempt {attempt + 1} failed: Rate limit (429). Retrying after {retry_after}s...")
                     await asyncio.sleep(retry_after + random.uniform(0, 1))
                     continue
-                elif status >= 500: # Server errors
+                elif status >= 500:
                     logging.warning(f"{api_name} API attempt {attempt + 1} failed with status {status}. Retrying...")
                     delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
                     await asyncio.sleep(delay)
                     continue
-
                 response.raise_for_status()
-                return await response.json() # Return raw JSON, parsing happens in research_idea
+                return await response.json()
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as e:
             logging.error(f"{api_name} API attempt {attempt + 1} failed: {e}")
-            if attempt + 1 == max_retries:
-                logging.error(f"Max retries reached for {api_name} API.")
-                return None
+            if attempt + 1 == max_retries: logging.error(f"Max retries reached for {api_name} API."); return None
             delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
             logging.info(f"Retrying {api_name} API in {delay:.2f} seconds...")
             await asyncio.sleep(delay)
@@ -179,28 +152,15 @@ async def call_search_api_async(session, query):
 async def ping_uptime_kuma(session, message="OK", ping_value=None):
     """Sends a heartbeat ping with optional message and ping value to Uptime Kuma."""
     base_url = config.UPTIME_KUMA_PUSH_URL
-    if not base_url or base_url == "YOUR_PUSH_URL_HERE":
-        logging.debug("Uptime Kuma Push URL not configured. Skipping ping.")
-        return
-
+    if not base_url or base_url == "YOUR_PUSH_URL_HERE": return
     params = {"status": "up", "msg": message}
     if ping_value is not None:
-        try:
-            params["ping"] = int(ping_value)
-        except (ValueError, TypeError):
-            logging.warning(f"Could not convert ping_value '{ping_value}' to integer for Uptime Kuma.")
-
+        try: params["ping"] = int(ping_value)
+        except (ValueError, TypeError): logging.warning(f"Invalid ping_value '{ping_value}' for Uptime Kuma.")
     try:
-        # Use aiohttp's URL builder which handles None values in params correctly
         url = aiohttp.helpers.build_url(base_url, params)
         logging.debug(f"Pinging Uptime Kuma: {url}")
-        async with session.get(str(url), timeout=10) as response: # Ensure URL is string
-            if response.status != 200:
-                 response_text = await response.text()
-                 logging.warning(f"Uptime Kuma ping failed with status {response.status}. Response: {response_text[:200]}")
-            else:
-                 logging.info(f"Uptime Kuma ping successful. Message: '{message}', Ping: {params.get('ping', 'N/A')}")
-    except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-        logging.error(f"Error pinging Uptime Kuma: {e}")
-    except Exception as e: # Catch potential URL building errors too
-         logging.error(f"Unexpected error during Uptime Kuma ping setup or execution: {e}")
+        async with session.get(str(url), timeout=10) as response:
+            if response.status != 200: logging.warning(f"Uptime Kuma ping failed: {response.status}")
+            else: logging.info(f"Uptime Kuma ping successful. Msg: '{message}', Ping: {params.get('ping', 'N/A')}")
+    except Exception as e: logging.error(f"Error pinging Uptime Kuma: {e}")
