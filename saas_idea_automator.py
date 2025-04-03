@@ -66,33 +66,90 @@ async def get_search_queries(session, idea_name):
     logging.warning(f"Failed to generate search queries for '{idea_name}'. Using defaults.")
     return [f"{idea_name} alternatives", f"{idea_name} pricing", f"{idea_name} market need", f"{idea_name} review"]
 
-async def research_idea(session, idea_name):
-    """Performs web searches using the configured API and compiles a summary."""
+def _is_dev_tool_idea(idea_name, description):
+    """Checks if an idea seems related to developer tools or GitHub."""
+    text_to_check = (idea_name + " " + (description or "")).lower()
+    dev_keywords = ["github", " api ", "developer tool", "library", " sdk ", "open source", " code ", " repo", " git "]
+    return any(keyword in text_to_check for keyword in dev_keywords)
+
+async def research_idea(session, idea_name, idea_description):
+    """Performs web searches and optionally GitHub search, compiling a summary."""
     logging.info(f">>> Researching idea: '{idea_name}'...")
     queries = await get_search_queries(session, idea_name)
-    research_summary = ""
+    research_summary = f"Idea: {idea_name}\nDescription: {idea_description or 'N/A'}\n" # Start summary with name/desc
+
+    # --- Web Search ---
     search_tasks = [api_clients.call_search_api_async(session, query) for query in queries]
     search_results_list = await asyncio.gather(*search_tasks, return_exceptions=True)
     for query, result_or_exc in zip(queries, search_results_list):
         if isinstance(result_or_exc, Exception): logging.error(f"Search task failed for '{query}': {result_or_exc}"); continue
         search_results = result_or_exc
         if not search_results: continue
-        research_summary += f"\nSearch Results for '{query}':\n"; count = 0; results_list = []
+        research_summary += f"\nWeb Search Results for '{query}':\n"; count = 0; results_list = []
         provider = config.SEARCH_PROVIDER
         try:
+            if provider == "brave" and 'web' in search_results and 'results' in search_results['web']:
+                 results_list, keys = search_results['web']['results'], ('title', 'description', 'url')
+                 # Handle extra snippets if present
+                 if config.BRAVE_API_KEY and config.BRAVE_API_KEY != "YOUR_BRAVE_API_KEY": # Check if brave is active
+                     # Check if extra_snippets might be in the response structure (adjust key if needed)
+                     extra_snippet_key = 'extra_snippets' # Assuming this is the key based on docs
+                     for result in results_list:
+                         if count >= config.SEARCH_RESULTS_LIMIT: break
+                         title, snippet, link = result.get(keys[0], 'N/A'), result.get(keys[1], 'N/A'), result.get(keys[2], '#')
+                         entry = f"- {title}: {snippet} ({link})\n"
+                         # Add extra snippets if they exist
+                         extras = result.get(extra_snippet_key, [])
+                         if extras and isinstance(extras, list):
+                              entry += "".join([f"  - Snippet: {extra}\n" for extra in extras])
+
+                         if len(research_summary) + len(entry) < config.MAX_SUMMARY_LENGTH: research_summary += entry; count += 1
+                         else: logging.warning("Research summary truncated (web search)."); break
+                     research_summary += "-" * 10 + "\n"
+                     continue # Skip default processing if brave handled extras
+
+            # Default processing for other providers or brave without extras structure found
             if provider == "google" and 'items' in search_results: results_list, keys = search_results['items'], ('title', 'snippet', 'link')
             elif provider == "serper" and 'organic' in search_results: results_list, keys = search_results['organic'], ('title', 'snippet', 'link')
+            # Fallback for brave if extra snippet logic didn't run
             elif provider == "brave" and 'web' in search_results and 'results' in search_results['web']: results_list, keys = search_results['web']['results'], ('title', 'description', 'url')
             else: logging.warning(f"Unexpected search structure from {provider} for '{query}'."); continue
+
             for result in results_list:
                 if count >= config.SEARCH_RESULTS_LIMIT: break
                 title, snippet, link = result.get(keys[0], 'N/A'), result.get(keys[1], 'N/A'), result.get(keys[2], '#')
                 entry = f"- {title}: {snippet} ({link})\n"
                 if len(research_summary) + len(entry) < config.MAX_SUMMARY_LENGTH: research_summary += entry; count += 1
-                else: logging.warning("Research summary truncated."); break
+                else: logging.warning("Research summary truncated (web search)."); break
             research_summary += "-" * 10 + "\n"
         except Exception as parse_exc: logging.error(f"Error parsing search results for '{query}' from {provider}: {parse_exc}", exc_info=True)
-    logging.info(f"Research complete for '{idea_name}'. Summary length: {len(research_summary)}")
+
+    # --- GitHub Search (Conditional) ---
+    if _is_dev_tool_idea(idea_name, idea_description):
+        logging.info(f"Idea '{idea_name}' seems dev-related, performing GitHub search...")
+        # Use keywords from name and description for query
+        github_query = " ".join(analysis_utils.tokenize_and_clean(idea_name + " " + (idea_description or "")))
+        if github_query:
+            github_results = await api_clients.call_github_search_api_async(session, github_query)
+            if github_results and 'items' in github_results:
+                gh_summary = "\nGitHub Repository Search Results:\n"
+                gh_count = 0
+                for item in github_results['items']:
+                    if gh_count >= 5: break # Limit GitHub results shown
+                    name = item.get('full_name', 'N/A')
+                    desc = item.get('description', 'N/A')
+                    url = item.get('html_url', '#')
+                    stars = item.get('stargazers_count', 0)
+                    lang = item.get('language', 'N/A')
+                    entry = f"- [{name}]({url}): {desc} (Stars: {stars}, Lang: {lang})\n"
+                    if len(research_summary) + len(gh_summary) + len(entry) < config.MAX_SUMMARY_LENGTH:
+                        gh_summary += entry; gh_count += 1
+                    else: logging.warning("Research summary truncated (GitHub search)."); break
+                if gh_count > 0: research_summary += gh_summary + "-" * 10 + "\n"
+            else: logging.info("No relevant GitHub repositories found or API failed.")
+        else: logging.warning("Could not generate meaningful query for GitHub search.")
+
+    logging.info(f"Research complete for '{idea_name}'. Final summary length: {len(research_summary)}")
     return research_summary.strip()
 
 async def extract_facts_for_rating(session, idea_name, research_summary):
@@ -139,7 +196,8 @@ async def process_single_idea(idea_name, idea_description, idea_embedding, proce
         if idea_lower in processed_ideas_set: return
         status, rating, justifications = "processing", None, {}
         try:
-            status = "researching"; summary = await research_idea(session, idea_name)
+            # Pass description to research function
+            status = "researching"; summary = await research_idea(session, idea_name, idea_description)
             await asyncio.sleep(random.uniform(0.5, 1.0))
             status = "fact_extraction"; extracted_facts = await extract_facts_for_rating(session, idea_name, summary)
             rating_context = extracted_facts if extracted_facts else summary
@@ -203,23 +261,16 @@ async def main():
             else: logging.info(f"Initial explore ratio: {current_explore_ratio:.2f}"); promising_themes = []
 
             # --- Prepare Negative Feedback (Keywords & Examples) ---
-            avoid_keywords_str = ""
-            avoid_examples_str = ""
-            low_rated_texts = state_manager.get_low_rated_texts(limit=50) # Get names/descriptions
+            avoid_keywords_str = ""; avoid_examples_str = ""
+            low_rated_texts = state_manager.get_low_rated_texts(limit=50)
             if low_rated_texts:
-                 # Extract Keywords
                  avoid_keywords = analysis_utils.extract_keywords(low_rated_texts, top_n=15)
-                 if avoid_keywords:
-                      avoid_keywords_str = "\n\nAvoid ideas related to these keywords: " + ", ".join(avoid_keywords)
-                 # Select Examples (prefer descriptions, limit to 3)
+                 if avoid_keywords: avoid_keywords_str = "\n\nAvoid ideas related to these keywords: " + ", ".join(avoid_keywords)
                  avoid_examples = random.sample(low_rated_texts, min(len(low_rated_texts), 3))
-                 if avoid_examples:
-                      avoid_examples_str = "\n\nAlso avoid generating ideas conceptually similar to these low-rated examples:\n" + "".join([f"- {ex}\n" for ex in avoid_examples])
+                 if avoid_examples: avoid_examples_str = "\n\nAlso avoid generating ideas conceptually similar to these low-rated examples:\n" + "".join([f"- {ex}\n" for ex in avoid_examples])
 
             # --- Idea Generation: Multi-Step, Variation, or New ---
-            initial_ideas = []
-            generation_mode = "New Ideas (Default)"
-
+            initial_ideas = []; generation_mode = "New Ideas (Default)"
             if config.ENABLE_MULTI_STEP_GENERATION:
                  logging.info("Attempting multi-step generation strategy...")
                  generation_mode = "Multi-Step"
@@ -238,11 +289,9 @@ async def main():
                                 if valid_selected_concepts:
                                      specific_idea_tasks = []
                                      for concept in valid_selected_concepts:
-                                          # Add keyword/example avoidance to specific idea prompt
                                           specific_prompt = config.SPECIFIC_IDEA_GENERATION_PROMPT_TEMPLATE.format(
                                                selected_concept=concept, num_ideas=config.NUM_IDEAS_PER_CONCEPT,
-                                               avoid_keywords_section=avoid_keywords_str, avoid_examples_section=avoid_examples_str
-                                          )
+                                               avoid_keywords_section=avoid_keywords_str, avoid_examples_section=avoid_examples_str)
                                           specific_idea_tasks.append(api_clients.call_gemini_api_async(session, specific_prompt))
                                      specific_idea_results = await asyncio.gather(*specific_idea_tasks, return_exceptions=True)
                                      for result_or_exc in specific_idea_results:
@@ -257,8 +306,7 @@ async def main():
                  else: logging.warning("Concept generation call failed.")
                  if not initial_ideas: logging.warning("Multi-step generation failed. Falling back."); generation_mode = "Fallback"
 
-            # Fallback or Variation/New generation if multi-step is disabled or failed
-            if not initial_ideas:
+            if not initial_ideas: # Fallback or Variation/New generation
                 if config.ENABLE_VARIATION_GENERATION and random.random() < config.VARIATION_GENERATION_PROBABILITY:
                      logging.info("Attempting variation generation strategy...")
                      candidate_ideas = state_manager.get_variation_candidate_ideas(config.VARIATION_SOURCE_MIN_RATING, config.VARIATION_SOURCE_MAX_RATING, limit=5)
@@ -273,8 +321,7 @@ async def main():
                               comp_score=justifications.get('competition', 'N/A|N/A').split('|')[0].split(':')[-1].strip(), comp_justification=justifications.get('competition', 'N/A|N/A').split('|')[-1].split(':')[-1].strip(),
                               mon_score=justifications.get('monetization', 'N/A|N/A').split('|')[0].split(':')[-1].strip(), mon_justification=justifications.get('monetization', 'N/A|N/A').split('|')[-1].split(':')[-1].strip(),
                               feas_score=justifications.get('feasibility', 'N/A|N/A').split('|')[0].split(':')[-1].strip(), feas_justification=justifications.get('feasibility', 'N/A|N/A').split('|')[-1].split(':')[-1].strip(),
-                              num_variations=config.NUM_VARIATIONS_TO_GENERATE
-                          )
+                              num_variations=config.NUM_VARIATIONS_TO_GENERATE)
                           variation_response = await api_clients.generate_variation_ideas_async(session, variation_prompt)
                           if variation_response:
                                parsed_variations = [match.group(1).strip() for line in variation_response.strip().split('\n') if (match := re.match(r"^\d+\.\s*(.*)", line.strip()))]
@@ -288,22 +335,14 @@ async def main():
                     explore = random.random() < current_explore_ratio
                     base_prompt_template = random.choice(config.IDEA_GENERATION_PROMPT_TEMPLATES)
                     logging.info(f"Using generation prompt type: {base_prompt_template[:50]}...")
-                    # Prepare positive theme string (improved representation)
                     positive_themes_str = ""
                     if not explore and promising_themes:
                          logging.info(f"Exploiting promising themes: {promising_themes}")
                          positive_themes_str = "\n\nTry to generate ideas related to these concepts: " + ", ".join([f"'{t}'" for t in promising_themes])
                     elif explore: logging.info("Exploring with broader prompt.")
                     else: logging.info("No promising themes yet or exploring.")
-
-                    # Format the chosen base prompt with avoidance keywords and examples
-                    generation_prompt = base_prompt_template.format(
-                        num_ideas=config.IDEAS_PER_BATCH,
-                        avoid_keywords_section=avoid_keywords_str,
-                        avoid_examples_section=avoid_examples_str
-                    )
-                    generation_prompt += positive_themes_str # Append positive themes if applicable
-
+                    generation_prompt = base_prompt_template.format(num_ideas=config.IDEAS_PER_BATCH, avoid_keywords_section=avoid_keywords_str, avoid_examples_section=avoid_examples_str)
+                    generation_prompt += positive_themes_str
                     initial_ideas = await generate_ideas(session, generation_prompt)
 
             # --- Generate Descriptions ---
@@ -316,26 +355,20 @@ async def main():
             texts_to_embed = [idea_descriptions.get(name) for name in initial_ideas if idea_descriptions.get(name)]
             names_with_desc = [name for name in initial_ideas if idea_descriptions.get(name)]
             low_rated_embeddings = state_manager.get_low_rated_embeddings(limit=200)
-
             if low_rated_embeddings and texts_to_embed:
                 logging.info("Applying semantic negative feedback filter based on descriptions...")
                 candidate_embeddings_list = analysis_utils.generate_embeddings(texts_to_embed)
                 if candidate_embeddings_list and len(candidate_embeddings_list) == len(texts_to_embed):
                     temp_embeddings_dict = {name: emb for name, emb in zip(names_with_desc, candidate_embeddings_list)}
                     for idea_name in initial_ideas:
-                        embedding = temp_embeddings_dict.get(idea_name)
-                        description = idea_descriptions.get(idea_name)
+                        embedding = temp_embeddings_dict.get(idea_name); description = idea_descriptions.get(idea_name)
                         if embedding and description:
                             if not analysis_utils.check_similarity(embedding, low_rated_embeddings, config.NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD):
                                 ideas_after_neg_filter.append(idea_name); candidate_embeddings_dict[idea_name] = embedding
                             else: logging.info(f"Filtered out '{idea_name}' due to description similarity.")
                         elif description: ideas_after_neg_filter.append(idea_name); candidate_embeddings_dict[idea_name] = None
-                else:
-                    logging.warning("Could not generate embeddings. Skipping semantic filter.")
-                    ideas_after_neg_filter = initial_ideas; candidate_embeddings_dict = {name: None for name in initial_ideas}
-            else:
-                 logging.info("No low-rated embeddings or no valid descriptions. Skipping semantic filter.")
-                 ideas_after_neg_filter = initial_ideas; candidate_embeddings_dict = {name: None for name in initial_ideas}
+                else: logging.warning("Could not generate embeddings. Skipping semantic filter."); ideas_after_neg_filter = initial_ideas; candidate_embeddings_dict = {name: None for name in initial_ideas}
+            else: logging.info("No low-rated embeddings or no valid descriptions. Skipping semantic filter."); ideas_after_neg_filter = initial_ideas; candidate_embeddings_dict = {name: None for name in initial_ideas}
 
             # --- Self-Critique Step ---
             ideas = []

@@ -29,6 +29,9 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-pro")
 UPTIME_KUMA_PUSH_URL = os.environ.get("UPTIME_KUMA_PUSH_URL")
 
+# GitHub API (Optional, for richer search on dev tools)
+GITHUB_PAT = os.environ.get("GITHUB_PAT") # Personal Access Token
+
 # --- Email Notification Settings ---
 ENABLE_EMAIL_NOTIFICATIONS = os.environ.get("ENABLE_EMAIL_NOTIFICATIONS", "false").lower() == "true"
 SMTP_SERVER = os.environ.get("SMTP_SERVER")
@@ -72,7 +75,7 @@ try:
     DELAY_BETWEEN_IDEAS = int(os.environ.get("DELAY_BETWEEN_IDEAS", 5))
     MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", 1))
     MAX_SUMMARY_LENGTH = int(os.environ.get("MAX_SUMMARY_LENGTH", 2500))
-    MAX_RUNS = int(os.environ.get("MAX_RUNS", 9999999)) # Limit to 1 run for testing
+    MAX_RUNS = int(os.environ.get("MAX_RUNS", 999999)) # Default for continuous running
     WAIT_BETWEEN_BATCHES = int(os.environ.get("WAIT_BETWEEN_BATCHES", 10))
     EXPLORE_RATIO = float(os.environ.get("EXPLORE_RATIO", 0.2))
     SMTP_PORT = int(SMTP_PORT)
@@ -80,7 +83,7 @@ except ValueError as e:
     logging.error(f"Error parsing numeric config: {e}. Using defaults.")
     IDEAS_PER_BATCH = 10; RATING_THRESHOLD = 9.0; SEARCH_RESULTS_LIMIT = 10
     DELAY_BETWEEN_IDEAS = 5; MAX_CONCURRENT_TASKS = 1; MAX_SUMMARY_LENGTH = 2500
-    MAX_RUNS = 9999999; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2 # Limit to 1 run
+    MAX_RUNS = 999999; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2 # Continuous run default
     SMTP_PORT = 587; NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = 0.85
     TREND_ANALYSIS_MIN_IDEAS = 10; TREND_ANALYSIS_RUN_INTERVAL = 5
     TREND_NGRAM_COUNT = 3; TREND_LDA_TOPICS = 3; TREND_LDA_WORDS = 3
@@ -130,7 +133,6 @@ SEARCH_QUERY_GENERATION_PROMPT_TEMPLATE = _prompts.get("SEARCH_QUERY_GENERATION"
 FACT_EXTRACTION_PROMPT_TEMPLATE = _prompts.get("FACT_EXTRACTION", "")
 RATING_PROMPT_TEMPLATE = _prompts.get("RATING", "")
 SELF_CRITIQUE_PROMPT_TEMPLATE = _prompts.get("SELF_CRITIQUE", "")
-# New Multi-Step Prompts
 CONCEPT_GENERATION_PROMPT_TEMPLATE = _prompts.get("CONCEPT_GENERATION", "")
 CONCEPT_SELECTION_PROMPT_TEMPLATE = _prompts.get("CONCEPT_SELECTION", "")
 SPECIFIC_IDEA_GENERATION_PROMPT_TEMPLATE = _prompts.get("SPECIFIC_IDEA_GENERATION", "")
@@ -164,6 +166,7 @@ def validate_config():
         if not email_valid: valid = False
     if EMBEDDING_MODEL == "all-MiniLM-L6-v2": logging.info(f"Using default embedding model: {EMBEDDING_MODEL}")
     else: logging.info(f"Using embedding model from env: {EMBEDDING_MODEL}")
+    if not GITHUB_PAT: logging.warning("GITHUB_PAT not set in .env. GitHub API calls will be rate-limited.")
     return valid
 
 # --- Logging Setup ---
