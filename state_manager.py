@@ -31,7 +31,6 @@ def init_db(db_path=DB_FILE):
                 idea_name_lower TEXT PRIMARY KEY, original_idea_name TEXT, status TEXT NOT NULL,
                 rating REAL, processed_timestamp DATETIME NOT NULL ); """
         cursor.execute(create_table_sql)
-        # Add columns if they don't exist
         columns_to_add = [('justifications', 'TEXT'), ('embedding_json', 'TEXT'), ('description', 'TEXT')]
         for col_name, col_type in columns_to_add:
             if not _does_column_exist(cursor, 'ideas', col_name):
@@ -135,7 +134,7 @@ def get_low_rated_texts(threshold=4.0, limit=50, db_path=DB_FILE):
 
 
 def get_high_rated_ideas(threshold=config.RATING_THRESHOLD, limit=50, db_path=DB_FILE):
-    """Retrieves high-rated ideas (name, description, rating, embedding) for trend analysis."""
+    """Retrieves high-rated ideas (name, desc, rating, embedding) for trend analysis, based purely on rating threshold."""
     ideas_data = []
     conn = None
     try:
@@ -145,10 +144,14 @@ def get_high_rated_ideas(threshold=config.RATING_THRESHOLD, limit=50, db_path=DB
         if cursor.fetchone():
             has_desc = _does_column_exist(cursor, 'ideas', 'description')
             has_embed = _does_column_exist(cursor, 'ideas', 'embedding_json')
+            # Select based on rating >= threshold, regardless of status
             select_cols = "original_idea_name, rating" + (", description" if has_desc else "") + (", embedding_json" if has_embed else "")
-            cursor.execute(f''' SELECT {select_cols} FROM ideas WHERE status = 'saved' AND rating IS NOT NULL AND rating >= ?
+            cursor.execute(f''' SELECT {select_cols} FROM ideas
+                                WHERE rating IS NOT NULL AND rating >= ?
                                 ORDER BY rating DESC, processed_timestamp DESC LIMIT ? ''', (threshold, limit))
-            for row in cursor.fetchall():
+            rows = cursor.fetchall()
+            logging.info(f"Found {len(rows)} ideas with rating >= {threshold} for trend analysis.")
+            for row in rows:
                  data = {"name": row[0], "rating": row[1]}; col_index = 2
                  if has_desc: data["description"] = row[col_index]; col_index += 1
                  if has_embed:
