@@ -43,22 +43,24 @@ EMAIL_RECIPIENT = os.environ.get("EMAIL_RECIPIENT")
 
 # --- Embedding Settings ---
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = float(os.environ.get("NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD", 0.85))
+# Adjusted based on analysis - lower threshold to filter more similar ideas
+NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = float(os.environ.get("NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD", 0.75))
 
 # --- Trend Analysis Settings ---
 TREND_ANALYSIS_MIN_IDEAS = int(os.environ.get("TREND_ANALYSIS_MIN_IDEAS", 10))
 TREND_ANALYSIS_RUN_INTERVAL = int(os.environ.get("TREND_ANALYSIS_RUN_INTERVAL", 5))
 TREND_NGRAM_COUNT = int(os.environ.get("TREND_NGRAM_COUNT", 3))
-TREND_LDA_TOPICS = int(os.environ.get("TREND_LDA_TOPICS", 3))
+# Adjusted based on analysis - reduce topics/clusters for smaller datasets
+TREND_LDA_TOPICS = int(os.environ.get("TREND_LDA_TOPICS", 2))
 TREND_LDA_WORDS = int(os.environ.get("TREND_LDA_WORDS", 3))
-TREND_CLUSTER_COUNT = int(os.environ.get("TREND_CLUSTER_COUNT", 3))
+TREND_CLUSTER_COUNT = int(os.environ.get("TREND_CLUSTER_COUNT", 2))
 TREND_CLUSTER_THEMES_PER_CLUSTER = int(os.environ.get("TREND_CLUSTER_THEMES_PER_CLUSTER", 1))
 
 # --- Idea Variation Settings ---
 ENABLE_VARIATION_GENERATION = os.environ.get("ENABLE_VARIATION_GENERATION", "true").lower() == "true"
 VARIATION_GENERATION_PROBABILITY = float(os.environ.get("VARIATION_GENERATION_PROBABILITY", 0.25))
-VARIATION_SOURCE_MIN_RATING = float(os.environ.get("VARIATION_SOURCE_MIN_RATING", 7.0))
-VARIATION_SOURCE_MAX_RATING = float(os.environ.get("VARIATION_SOURCE_MAX_RATING", 8.9)) # Adjusted max to avoid overlap if threshold lowered
+VARIATION_SOURCE_MIN_RATING = float(os.environ.get("VARIATION_SOURCE_MIN_RATING", 7.0)) # Keep below current threshold
+VARIATION_SOURCE_MAX_RATING = float(os.environ.get("VARIATION_SOURCE_MAX_RATING", 7.4)) # Adjusted max to avoid overlap
 NUM_VARIATIONS_TO_GENERATE = int(os.environ.get("NUM_VARIATIONS_TO_GENERATE", 5))
 
 # --- Multi-Step Generation Settings ---
@@ -70,7 +72,7 @@ NUM_IDEAS_PER_CONCEPT = int(os.environ.get("NUM_IDEAS_PER_CONCEPT", 5))
 # --- Script Parameters ---
 try:
     IDEAS_PER_BATCH = int(os.environ.get("IDEAS_PER_BATCH", 10)) # Used if multi-step/variation disabled
-    RATING_THRESHOLD = float(os.environ.get("RATING_THRESHOLD", 7.5)) # Lowered threshold
+    RATING_THRESHOLD = float(os.environ.get("RATING_THRESHOLD", 7.5)) # Keep lowered threshold for now
     SEARCH_RESULTS_LIMIT = int(os.environ.get("SEARCH_RESULTS_LIMIT", 10))
     DELAY_BETWEEN_IDEAS = int(os.environ.get("DELAY_BETWEEN_IDEAS", 5))
     MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", 1))
@@ -81,15 +83,15 @@ try:
     SMTP_PORT = int(SMTP_PORT)
 except ValueError as e:
     logging.error(f"Error parsing numeric config: {e}. Using defaults.")
-    IDEAS_PER_BATCH = 10; RATING_THRESHOLD = 7.5; SEARCH_RESULTS_LIMIT = 10 # Lowered threshold
+    IDEAS_PER_BATCH = 10; RATING_THRESHOLD = 7.5; SEARCH_RESULTS_LIMIT = 10 # Keep lowered threshold
     DELAY_BETWEEN_IDEAS = 5; MAX_CONCURRENT_TASKS = 1; MAX_SUMMARY_LENGTH = 2500
     MAX_RUNS = 999999; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2
-    SMTP_PORT = 587; NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = 0.85
+    SMTP_PORT = 587; NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = 0.75 # Adjusted
     TREND_ANALYSIS_MIN_IDEAS = 10; TREND_ANALYSIS_RUN_INTERVAL = 5
-    TREND_NGRAM_COUNT = 3; TREND_LDA_TOPICS = 3; TREND_LDA_WORDS = 3
-    TREND_CLUSTER_COUNT = 3; TREND_CLUSTER_THEMES_PER_CLUSTER = 1
+    TREND_NGRAM_COUNT = 3; TREND_LDA_TOPICS = 2; TREND_LDA_WORDS = 3 # Adjusted
+    TREND_CLUSTER_COUNT = 2; TREND_CLUSTER_THEMES_PER_CLUSTER = 1 # Adjusted
     VARIATION_GENERATION_PROBABILITY = 0.25; VARIATION_SOURCE_MIN_RATING = 7.0
-    VARIATION_SOURCE_MAX_RATING = 8.9; NUM_VARIATIONS_TO_GENERATE = 5
+    VARIATION_SOURCE_MAX_RATING = 7.4; NUM_VARIATIONS_TO_GENERATE = 5 # Adjusted max rating
     NUM_CONCEPTS_TO_GENERATE = 5; NUM_CONCEPTS_TO_SELECT = 2; NUM_IDEAS_PER_CONCEPT = 5
 
 
