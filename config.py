@@ -58,7 +58,7 @@ TREND_CLUSTER_THEMES_PER_CLUSTER = int(os.environ.get("TREND_CLUSTER_THEMES_PER_
 ENABLE_VARIATION_GENERATION = os.environ.get("ENABLE_VARIATION_GENERATION", "true").lower() == "true"
 VARIATION_GENERATION_PROBABILITY = float(os.environ.get("VARIATION_GENERATION_PROBABILITY", 0.25))
 VARIATION_SOURCE_MIN_RATING = float(os.environ.get("VARIATION_SOURCE_MIN_RATING", 7.0))
-VARIATION_SOURCE_MAX_RATING = float(os.environ.get("VARIATION_SOURCE_MAX_RATING", 8.9))
+VARIATION_SOURCE_MAX_RATING = float(os.environ.get("VARIATION_SOURCE_MAX_RATING", 8.9)) # Adjusted max to avoid overlap if threshold lowered
 NUM_VARIATIONS_TO_GENERATE = int(os.environ.get("NUM_VARIATIONS_TO_GENERATE", 5))
 
 # --- Multi-Step Generation Settings ---
@@ -70,7 +70,7 @@ NUM_IDEAS_PER_CONCEPT = int(os.environ.get("NUM_IDEAS_PER_CONCEPT", 5))
 # --- Script Parameters ---
 try:
     IDEAS_PER_BATCH = int(os.environ.get("IDEAS_PER_BATCH", 10)) # Used if multi-step/variation disabled
-    RATING_THRESHOLD = float(os.environ.get("RATING_THRESHOLD", 9.0))
+    RATING_THRESHOLD = float(os.environ.get("RATING_THRESHOLD", 7.5)) # Lowered threshold
     SEARCH_RESULTS_LIMIT = int(os.environ.get("SEARCH_RESULTS_LIMIT", 10))
     DELAY_BETWEEN_IDEAS = int(os.environ.get("DELAY_BETWEEN_IDEAS", 5))
     MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", 1))
@@ -81,9 +81,9 @@ try:
     SMTP_PORT = int(SMTP_PORT)
 except ValueError as e:
     logging.error(f"Error parsing numeric config: {e}. Using defaults.")
-    IDEAS_PER_BATCH = 10; RATING_THRESHOLD = 9.0; SEARCH_RESULTS_LIMIT = 10
+    IDEAS_PER_BATCH = 10; RATING_THRESHOLD = 7.5; SEARCH_RESULTS_LIMIT = 10 # Lowered threshold
     DELAY_BETWEEN_IDEAS = 5; MAX_CONCURRENT_TASKS = 1; MAX_SUMMARY_LENGTH = 2500
-    MAX_RUNS = 999999; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2 # Continuous run default
+    MAX_RUNS = 999999; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2
     SMTP_PORT = 587; NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = 0.85
     TREND_ANALYSIS_MIN_IDEAS = 10; TREND_ANALYSIS_RUN_INTERVAL = 5
     TREND_NGRAM_COUNT = 3; TREND_LDA_TOPICS = 3; TREND_LDA_WORDS = 3
