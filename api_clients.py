@@ -104,7 +104,13 @@ async def call_search_api_async(session, query):
     if provider == "brave":
         if not config.BRAVE_API_KEY or config.BRAVE_API_KEY == "YOUR_BRAVE_API_KEY": logging.error("Brave API key missing."); return None
         url = "https://api.search.brave.com/res/v1/web/search"
-        params = {'q': query, 'count': config.SEARCH_RESULTS_LIMIT}
+        params = {
+            'q': query,
+            'count': config.SEARCH_RESULTS_LIMIT,
+            'freshness': 'pm',
+            'result_filter': 'web',
+            'extra_snippets': 'true' # Pass boolean as string
+        }
         headers = {'Accept': 'application/json', 'Accept-Encoding': 'gzip', 'X-Subscription-Token': config.BRAVE_API_KEY}
         api_name = "Brave Search"
     elif provider == "serper":
@@ -124,7 +130,10 @@ async def call_search_api_async(session, query):
     max_retries = 3; base_delay = 1
     for attempt in range(max_retries):
         try:
-            request_args = {'params': params} if params else {'data': payload}
+            # Ensure all params are strings, ints, or floats for requests library compatibility
+            processed_params = {k: str(v) if isinstance(v, bool) else v for k, v in params.items()} if params else None
+            request_args = {'params': processed_params} if processed_params else {'data': payload}
+
             async with session.get(url, headers=headers, timeout=15, **request_args) as response:
                 status = response.status
                 if status == 429:
@@ -158,7 +167,6 @@ async def ping_uptime_kuma(session, message="OK", ping_value=None):
         if ping_value is not None:
             try: params["ping"] = str(int(ping_value)) # Uptime Kuma expects ping as string
             except (ValueError, TypeError): logging.warning(f"Invalid ping_value '{ping_value}' for Uptime Kuma.")
-        # Use yarl's with_query method
         ping_url = base_url.with_query(params)
         logging.debug(f"Pinging Uptime Kuma: {ping_url}")
         async with session.get(ping_url, timeout=10) as response:
