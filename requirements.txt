@@ -5,3 +5,4 @@ nltk
 sentence-transformers
 scikit-learn
 numpy
+yarl

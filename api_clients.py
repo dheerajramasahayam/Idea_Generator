@@ -4,6 +4,7 @@ import json
 import random
 import logging
 import config # Import configuration
+from yarl import URL # Import URL from yarl
 
 async def call_gemini_api_async(session, prompt):
     """
@@ -90,8 +91,6 @@ async def call_gemini_api_async(session, prompt):
 async def generate_variation_ideas_async(session, variation_prompt):
     """Generates variations of an idea using the Gemini API."""
     logging.info(">>> Generating variation ideas...")
-    # This function simply calls the main Gemini API function
-    # The specific parsing logic for variations will be handled in the main script
     return await call_gemini_api_async(session, variation_prompt)
 
 
@@ -151,16 +150,18 @@ async def call_search_api_async(session, query):
 
 async def ping_uptime_kuma(session, message="OK", ping_value=None):
     """Sends a heartbeat ping with optional message and ping value to Uptime Kuma."""
-    base_url = config.UPTIME_KUMA_PUSH_URL
-    if not base_url or base_url == "YOUR_PUSH_URL_HERE": return
-    params = {"status": "up", "msg": message}
-    if ping_value is not None:
-        try: params["ping"] = int(ping_value)
-        except (ValueError, TypeError): logging.warning(f"Invalid ping_value '{ping_value}' for Uptime Kuma.")
+    base_url_str = config.UPTIME_KUMA_PUSH_URL
+    if not base_url_str or base_url_str == "YOUR_PUSH_URL_HERE": return
     try:
-        url = aiohttp.helpers.build_url(base_url, params)
-        logging.debug(f"Pinging Uptime Kuma: {url}")
-        async with session.get(str(url), timeout=10) as response:
+        base_url = URL(base_url_str)
+        params = {"status": "up", "msg": message}
+        if ping_value is not None:
+            try: params["ping"] = str(int(ping_value)) # Uptime Kuma expects ping as string
+            except (ValueError, TypeError): logging.warning(f"Invalid ping_value '{ping_value}' for Uptime Kuma.")
+        # Use yarl's with_query method
+        ping_url = base_url.with_query(params)
+        logging.debug(f"Pinging Uptime Kuma: {ping_url}")
+        async with session.get(ping_url, timeout=10) as response:
             if response.status != 200: logging.warning(f"Uptime Kuma ping failed: {response.status}")
             else: logging.info(f"Uptime Kuma ping successful. Msg: '{message}', Ping: {params.get('ping', 'N/A')}")
     except Exception as e: logging.error(f"Error pinging Uptime Kuma: {e}")
