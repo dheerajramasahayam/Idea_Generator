@@ -6,11 +6,23 @@ venv/
 /venv/
 *.venv
 .venv/
+env/
+.env
+*-env/
+env.*/
+venv.*/
 
 # Python cache files
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+
+# Build/Distribution artifacts
+build/
+dist/
+*.egg-info/
+*.so
 *.pyd
 
 # Log files
@@ -27,6 +39,7 @@ ideas_state.db
 # Generated Output/Data files
 gemini_rated_ideas.md
 processed_ideas.log # Old state file if present
+analysis_output/
 
 # Ignore the directory containing other markdown notes
 ideas/
