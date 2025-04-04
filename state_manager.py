@@ -5,6 +5,7 @@ import os
 import datetime
 import json
 import random
+import math # For softmax calculation
 
 DB_FILE = config.STATE_FILE
 
@@ -32,7 +33,10 @@ def init_db(db_path=DB_FILE):
                 idea_name_lower TEXT PRIMARY KEY, original_idea_name TEXT, status TEXT NOT NULL,
                 rating REAL, processed_timestamp DATETIME NOT NULL ); """
         cursor.execute(create_ideas_table_sql)
-        columns_to_add = [('justifications', 'TEXT'), ('embedding_json', 'TEXT'), ('description', 'TEXT')]
+        columns_to_add = [
+            ('justifications', 'TEXT'), ('embedding_json', 'TEXT'),
+            ('description', 'TEXT'), ('source_prompt_type', 'TEXT') # Added source_prompt_type
+        ]
         for col_name, col_type in columns_to_add:
             if not _does_column_exist(cursor, 'ideas', col_name):
                 logging.warning(f"Column '{col_name}' not found in 'ideas'. Adding it...")
@@ -44,11 +48,20 @@ def init_db(db_path=DB_FILE):
         logging.info("Ensuring 'pending_ideas' table schema...")
         create_pending_table_sql = """
             CREATE TABLE IF NOT EXISTS pending_ideas (
-                idea_name TEXT PRIMARY KEY,
-                added_timestamp DATETIME NOT NULL
+                idea_name TEXT PRIMARY KEY, added_timestamp DATETIME NOT NULL ); """
+        cursor.execute(create_pending_table_sql)
+
+        # --- Prompt Performance Table ---
+        logging.info("Ensuring 'prompt_performance' table schema...")
+        create_perf_table_sql = """
+            CREATE TABLE IF NOT EXISTS prompt_performance (
+                prompt_type TEXT PRIMARY KEY,
+                total_generated INTEGER DEFAULT 0 NOT NULL,
+                total_rating REAL DEFAULT 0.0 NOT NULL,
+                average_rating REAL DEFAULT 0.0 NOT NULL
             );
         """
-        cursor.execute(create_pending_table_sql)
+        cursor.execute(create_perf_table_sql)
 
         conn.commit()
         logging.info(f"Database '{db_path}' schema verified/updated successfully.")
@@ -76,8 +89,8 @@ def load_processed_ideas(db_path=DB_FILE):
         if conn: conn.close()
     return processed
 
-def update_idea_state(idea_name, status, rating=None, justifications=None, embedding=None, description=None, db_path=DB_FILE):
-    """Inserts or updates the state of an idea."""
+def update_idea_state(idea_name, status, rating=None, justifications=None, embedding=None, description=None, source_prompt_type=None, db_path=DB_FILE):
+    """Inserts or updates the state of an idea, including its source prompt type."""
     conn = None
     idea_name_lower = idea_name.lower()
     timestamp = datetime.datetime.now().isoformat()
@@ -86,13 +99,17 @@ def update_idea_state(idea_name, status, rating=None, justifications=None, embed
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
+        # Ensure source_prompt_type column exists before trying to update it
+        if not _does_column_exist(cursor, 'ideas', 'source_prompt_type'):
+             source_prompt_type = None # Set to None if column doesn't exist
+
         cursor.execute('''
             INSERT OR REPLACE INTO ideas
-            (idea_name_lower, original_idea_name, description, status, rating, justifications, embedding_json, processed_timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (idea_name_lower, idea_name, description, status, rating, justifications_json, embedding_json, timestamp))
+            (idea_name_lower, original_idea_name, description, status, rating, justifications, embedding_json, source_prompt_type, processed_timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (idea_name_lower, idea_name, description, status, rating, justifications_json, embedding_json, source_prompt_type, timestamp))
         conn.commit()
-        logging.debug(f"Updated state for idea '{idea_name}' to status '{status}'")
+        logging.debug(f"Updated state for idea '{idea_name}' to status '{status}' (Source: {source_prompt_type})")
     except sqlite3.Error as e: logging.error(f"Error updating state for idea '{idea_name}' in '{db_path}': {e}")
     finally:
         if conn: conn.close()
@@ -108,7 +125,6 @@ def add_pending_ideas(idea_names, db_path=DB_FILE):
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        # Use INSERT OR IGNORE to avoid errors if an idea is already pending
         cursor.executemany('''
             INSERT OR IGNORE INTO pending_ideas (idea_name, added_timestamp) VALUES (?, ?)
         ''', ideas_to_insert)
@@ -125,28 +141,72 @@ def fetch_and_clear_pending_ideas(limit, db_path=DB_FILE):
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        # Fetch oldest ideas first
         cursor.execute("SELECT idea_name FROM pending_ideas ORDER BY added_timestamp ASC LIMIT ?", (limit,))
         pending_ideas = [row[0] for row in cursor.fetchall()]
-
         if pending_ideas:
-            # Delete the fetched ideas
             placeholders = ','.join('?' for _ in pending_ideas)
             cursor.execute(f"DELETE FROM pending_ideas WHERE idea_name IN ({placeholders})", pending_ideas)
             conn.commit()
             logging.info(f"Fetched and cleared {len(pending_ideas)} ideas from the pending queue.")
-        else:
-            logging.debug("No pending ideas found in the queue.")
-
+        else: logging.debug("No pending ideas found in the queue.")
     except sqlite3.Error as e: logging.error(f"Error fetching/clearing pending ideas from '{db_path}': {e}")
     finally:
         if conn: conn.close()
     return pending_ideas
 
+# --- Functions for Prompt Performance Tracking ---
+
+def update_prompt_performance(prompt_type, rating, db_path=DB_FILE):
+    """Updates the performance metrics for a given prompt type."""
+    if rating is None or prompt_type is None: return # Cannot update without rating and type
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        # Ensure row exists
+        cursor.execute("INSERT OR IGNORE INTO prompt_performance (prompt_type) VALUES (?)", (prompt_type,))
+        # Update totals
+        cursor.execute("""
+            UPDATE prompt_performance
+            SET total_generated = total_generated + 1,
+                total_rating = total_rating + ?
+            WHERE prompt_type = ?
+        """, (rating, prompt_type))
+        # Recalculate and update average
+        cursor.execute("""
+            UPDATE prompt_performance
+            SET average_rating = total_rating / total_generated
+            WHERE prompt_type = ? AND total_generated > 0
+        """, (prompt_type,))
+        conn.commit()
+        logging.debug(f"Updated performance for prompt type '{prompt_type}' with rating {rating:.1f}")
+    except sqlite3.Error as e: logging.error(f"Error updating prompt performance for '{prompt_type}': {e}")
+    finally:
+        if conn: conn.close()
+
+def get_prompt_performance(db_path=DB_FILE):
+    """Retrieves performance data for all tracked prompt types."""
+    performance_data = {}
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT prompt_type, total_generated, average_rating FROM prompt_performance")
+        for row in cursor.fetchall():
+            prompt_type, count, avg_rating = row
+            performance_data[prompt_type] = {'count': count, 'avg_rating': avg_rating}
+        logging.info(f"Retrieved performance data for {len(performance_data)} prompt types.")
+    except sqlite3.Error as e: logging.error(f"Error retrieving prompt performance data: {e}")
+    finally:
+        if conn: conn.close()
+    return performance_data
+
+
 # --- Functions for Analysis/Feedback ---
 
 def get_low_rated_embeddings(threshold=4.0, limit=100, db_path=DB_FILE):
     """Retrieves embeddings (as lists) of low-rated ideas."""
+    # ... (implementation remains the same) ...
     embeddings = []
     conn = None
     try:
@@ -171,6 +231,7 @@ def get_low_rated_embeddings(threshold=4.0, limit=100, db_path=DB_FILE):
 
 def get_low_rated_texts(threshold=4.0, limit=50, db_path=DB_FILE):
     """Retrieves names and descriptions of low-rated ideas for keyword extraction."""
+    # ... (implementation remains the same) ...
     texts = []
     conn = None
     try:
@@ -195,6 +256,7 @@ def get_low_rated_texts(threshold=4.0, limit=50, db_path=DB_FILE):
 
 def get_high_rated_ideas(threshold=config.RATING_THRESHOLD, limit=50, db_path=DB_FILE):
     """Retrieves high-rated ideas (name, desc, rating, embedding) for trend analysis, based purely on rating threshold."""
+    # ... (implementation remains the same - already filters only on rating) ...
     ideas_data = []
     conn = None
     try:
@@ -225,6 +287,7 @@ def get_high_rated_ideas(threshold=config.RATING_THRESHOLD, limit=50, db_path=DB
 
 def get_variation_candidate_ideas(min_rating, max_rating, limit=10, db_path=DB_FILE):
     """Retrieves moderately rated ideas suitable for generating variations."""
+    # ... (implementation remains the same) ...
     candidates = []
     conn = None
     try:
@@ -253,6 +316,7 @@ def get_variation_candidate_ideas(min_rating, max_rating, limit=10, db_path=DB_F
 
 def get_recent_ratings(limit=50, db_path=DB_FILE):
     """Retrieves the ratings of the most recently processed ideas."""
+    # ... (implementation remains the same) ...
     ratings = []
     conn = None
     try:
@@ -271,6 +335,7 @@ def get_recent_ratings(limit=50, db_path=DB_FILE):
 
 def save_rated_idea(idea_name, rating, justifications, filename=config.OUTPUT_FILE):
     """Appends a high-scoring idea and its justifications to the main output file."""
+    # ... (implementation remains the same) ...
     logging.info(f"--- Saving high-scoring idea to '{filename}': '{idea_name}' (Score: {rating:.1f}) ---")
     try:
         os.makedirs(os.path.dirname(filename) or '.', exist_ok=True)
