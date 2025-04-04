@@ -5,6 +5,7 @@ import random
 import logging
 import config # Import configuration
 from yarl import URL # Import URL from yarl
+import time # Import time for GitHub rate limit handling
 
 async def call_gemini_api_async(session, prompt):
     """
@@ -73,6 +74,11 @@ async def generate_variation_ideas_async(session, variation_prompt):
     logging.info(">>> Generating variation ideas...")
     return await call_gemini_api_async(session, variation_prompt)
 
+async def generate_regenerated_ideas_async(session, regeneration_prompt):
+    """Generates alternative ideas based on feedback using the Gemini API."""
+    logging.info(">>> Generating alternative ideas (focused re-generation)...")
+    return await call_gemini_api_async(session, regeneration_prompt)
+
 
 async def call_search_api_async(session, query):
     """Calls the configured search API (Brave, Serper, or Google) asynchronously."""
@@ -127,7 +133,6 @@ async def call_github_search_api_async(session, query):
     """Searches GitHub repositories using the GitHub REST API."""
     logging.info(f"--- Searching GitHub Repositories for: '{query}' ---")
     url = "https://api.github.com/search/repositories"
-    # Search for query, sort by stars, limit to 5 results
     params = {'q': query, 'sort': 'stars', 'order': 'desc', 'per_page': 5}
     headers = {'Accept': 'application/vnd.github.v3+json'}
     if config.GITHUB_PAT:
@@ -136,12 +141,11 @@ async def call_github_search_api_async(session, query):
     else:
         logging.warning("No GitHub PAT found. API calls will be severely rate-limited.")
 
-    max_retries = 2; base_delay = 3 # Fewer retries, longer base delay for GitHub
+    max_retries = 2; base_delay = 3
     for attempt in range(max_retries):
         try:
             async with session.get(url, headers=headers, params=params, timeout=20) as response:
                 status = response.status
-                # Check remaining rate limit (optional but good practice)
                 remaining = response.headers.get('X-RateLimit-Remaining')
                 if remaining: logging.debug(f"GitHub API rate limit remaining: {remaining}")
 
@@ -150,14 +154,14 @@ async def call_github_search_api_async(session, query):
                     wait_time = max(reset_time - time.time(), base_delay)
                     logging.warning(f"GitHub API attempt {attempt + 1} failed: Rate limit exceeded. Retrying after {wait_time:.0f}s...")
                     await asyncio.sleep(wait_time + random.uniform(0, 1)); continue
-                elif status >= 500: # Server error
+                elif status >= 500:
                      logging.warning(f"GitHub API attempt {attempt + 1} failed with status {status}. Retrying...")
                      delay = base_delay * (2 ** attempt) + random.uniform(0, 1); await asyncio.sleep(delay); continue
 
-                response.raise_for_status() # Raise for other client errors (4xx)
+                response.raise_for_status()
                 data = await response.json()
                 logging.info(f"GitHub API search successful. Found {data.get('total_count', 0)} potential repositories.")
-                return data # Return the full response data
+                return data
 
         except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as e:
             logging.error(f"GitHub API call attempt {attempt + 1} failed: {e}")

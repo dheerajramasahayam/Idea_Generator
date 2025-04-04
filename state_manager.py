@@ -17,7 +17,7 @@ def _does_column_exist(cursor, table_name, column_name):
     return False
 
 def init_db(db_path=DB_FILE):
-    """Initializes the SQLite database and adds missing columns."""
+    """Initializes the SQLite database and adds missing columns/tables."""
     conn = None
     try:
         logging.info(f"Attempting to initialize database: {db_path}")
@@ -26,18 +26,30 @@ def init_db(db_path=DB_FILE):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         logging.info("Database connection successful. Ensuring 'ideas' table schema...")
-        create_table_sql = """
+        # --- Ideas Table ---
+        create_ideas_table_sql = """
             CREATE TABLE IF NOT EXISTS ideas (
                 idea_name_lower TEXT PRIMARY KEY, original_idea_name TEXT, status TEXT NOT NULL,
                 rating REAL, processed_timestamp DATETIME NOT NULL ); """
-        cursor.execute(create_table_sql)
+        cursor.execute(create_ideas_table_sql)
         columns_to_add = [('justifications', 'TEXT'), ('embedding_json', 'TEXT'), ('description', 'TEXT')]
         for col_name, col_type in columns_to_add:
             if not _does_column_exist(cursor, 'ideas', col_name):
-                logging.warning(f"Column '{col_name}' not found. Adding it...")
+                logging.warning(f"Column '{col_name}' not found in 'ideas'. Adding it...")
                 cursor.execute(f"ALTER TABLE ideas ADD COLUMN {col_name} {col_type};")
                 logging.info(f"Column '{col_name}' added successfully.")
-            else: logging.debug(f"Column '{col_name}' already exists.")
+            else: logging.debug(f"Column '{col_name}' already exists in 'ideas'.")
+
+        # --- Pending Ideas Table ---
+        logging.info("Ensuring 'pending_ideas' table schema...")
+        create_pending_table_sql = """
+            CREATE TABLE IF NOT EXISTS pending_ideas (
+                idea_name TEXT PRIMARY KEY,
+                added_timestamp DATETIME NOT NULL
+            );
+        """
+        cursor.execute(create_pending_table_sql)
+
         conn.commit()
         logging.info(f"Database '{db_path}' schema verified/updated successfully.")
     except sqlite3.Error as e: logging.error(f"SQLite error during DB init '{db_path}': {e}"); raise
@@ -84,6 +96,54 @@ def update_idea_state(idea_name, status, rating=None, justifications=None, embed
     except sqlite3.Error as e: logging.error(f"Error updating state for idea '{idea_name}' in '{db_path}': {e}")
     finally:
         if conn: conn.close()
+
+# --- Functions for Pending Ideas Queue ---
+
+def add_pending_ideas(idea_names, db_path=DB_FILE):
+    """Adds a list of idea names to the pending queue."""
+    if not idea_names: return
+    conn = None
+    timestamp = datetime.datetime.now().isoformat()
+    ideas_to_insert = [(name, timestamp) for name in idea_names]
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        # Use INSERT OR IGNORE to avoid errors if an idea is already pending
+        cursor.executemany('''
+            INSERT OR IGNORE INTO pending_ideas (idea_name, added_timestamp) VALUES (?, ?)
+        ''', ideas_to_insert)
+        conn.commit()
+        logging.info(f"Added {len(ideas_to_insert)} ideas to the pending queue.")
+    except sqlite3.Error as e: logging.error(f"Error adding pending ideas to '{db_path}': {e}")
+    finally:
+        if conn: conn.close()
+
+def fetch_and_clear_pending_ideas(limit, db_path=DB_FILE):
+    """Fetches a batch of pending ideas and removes them from the queue."""
+    pending_ideas = []
+    conn = None
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        # Fetch oldest ideas first
+        cursor.execute("SELECT idea_name FROM pending_ideas ORDER BY added_timestamp ASC LIMIT ?", (limit,))
+        pending_ideas = [row[0] for row in cursor.fetchall()]
+
+        if pending_ideas:
+            # Delete the fetched ideas
+            placeholders = ','.join('?' for _ in pending_ideas)
+            cursor.execute(f"DELETE FROM pending_ideas WHERE idea_name IN ({placeholders})", pending_ideas)
+            conn.commit()
+            logging.info(f"Fetched and cleared {len(pending_ideas)} ideas from the pending queue.")
+        else:
+            logging.debug("No pending ideas found in the queue.")
+
+    except sqlite3.Error as e: logging.error(f"Error fetching/clearing pending ideas from '{db_path}': {e}")
+    finally:
+        if conn: conn.close()
+    return pending_ideas
+
+# --- Functions for Analysis/Feedback ---
 
 def get_low_rated_embeddings(threshold=4.0, limit=100, db_path=DB_FILE):
     """Retrieves embeddings (as lists) of low-rated ideas."""
@@ -144,7 +204,6 @@ def get_high_rated_ideas(threshold=config.RATING_THRESHOLD, limit=50, db_path=DB
         if cursor.fetchone():
             has_desc = _does_column_exist(cursor, 'ideas', 'description')
             has_embed = _does_column_exist(cursor, 'ideas', 'embedding_json')
-            # Select based on rating >= threshold, regardless of status
             select_cols = "original_idea_name, rating" + (", description" if has_desc else "") + (", embedding_json" if has_embed else "")
             cursor.execute(f''' SELECT {select_cols} FROM ideas
                                 WHERE rating IS NOT NULL AND rating >= ?

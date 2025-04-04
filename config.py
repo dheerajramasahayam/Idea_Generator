@@ -43,36 +43,38 @@ EMAIL_RECIPIENT = os.environ.get("EMAIL_RECIPIENT")
 
 # --- Embedding Settings ---
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
-# Adjusted based on analysis - lower threshold to filter more similar ideas
-NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = float(os.environ.get("NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD", 0.75))
+NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = float(os.environ.get("NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD", 0.75)) # Tuned
 
 # --- Trend Analysis Settings ---
 TREND_ANALYSIS_MIN_IDEAS = int(os.environ.get("TREND_ANALYSIS_MIN_IDEAS", 10))
 TREND_ANALYSIS_RUN_INTERVAL = int(os.environ.get("TREND_ANALYSIS_RUN_INTERVAL", 5))
 TREND_NGRAM_COUNT = int(os.environ.get("TREND_NGRAM_COUNT", 3))
-# Adjusted based on analysis - reduce topics/clusters for smaller datasets
-TREND_LDA_TOPICS = int(os.environ.get("TREND_LDA_TOPICS", 2))
+TREND_LDA_TOPICS = int(os.environ.get("TREND_LDA_TOPICS", 2)) # Tuned
 TREND_LDA_WORDS = int(os.environ.get("TREND_LDA_WORDS", 3))
-TREND_CLUSTER_COUNT = int(os.environ.get("TREND_CLUSTER_COUNT", 2))
+TREND_CLUSTER_COUNT = int(os.environ.get("TREND_CLUSTER_COUNT", 2)) # Tuned
 TREND_CLUSTER_THEMES_PER_CLUSTER = int(os.environ.get("TREND_CLUSTER_THEMES_PER_CLUSTER", 1))
 
 # --- Idea Variation Settings ---
 ENABLE_VARIATION_GENERATION = os.environ.get("ENABLE_VARIATION_GENERATION", "true").lower() == "true"
 VARIATION_GENERATION_PROBABILITY = float(os.environ.get("VARIATION_GENERATION_PROBABILITY", 0.25))
-VARIATION_SOURCE_MIN_RATING = float(os.environ.get("VARIATION_SOURCE_MIN_RATING", 7.0)) # Keep below current threshold
-VARIATION_SOURCE_MAX_RATING = float(os.environ.get("VARIATION_SOURCE_MAX_RATING", 7.4)) # Adjusted max to avoid overlap
-NUM_VARIATIONS_TO_GENERATE = int(os.environ.get("NUM_VARIATIONS_TO_GENERATE", 5))
+VARIATION_SOURCE_MIN_RATING = float(os.environ.get("VARIATION_SOURCE_MIN_RATING", 7.0))
+VARIATION_SOURCE_MAX_RATING = float(os.environ.get("VARIATION_SOURCE_MAX_RATING", 7.4)) # Adjusted based on threshold
 
 # --- Multi-Step Generation Settings ---
-ENABLE_MULTI_STEP_GENERATION = os.environ.get("ENABLE_MULTI_STEP_GENERATION", "false").lower() == "true" # Default false
+ENABLE_MULTI_STEP_GENERATION = os.environ.get("ENABLE_MULTI_STEP_GENERATION", "false").lower() == "true"
 NUM_CONCEPTS_TO_GENERATE = int(os.environ.get("NUM_CONCEPTS_TO_GENERATE", 5))
 NUM_CONCEPTS_TO_SELECT = int(os.environ.get("NUM_CONCEPTS_TO_SELECT", 2))
 NUM_IDEAS_PER_CONCEPT = int(os.environ.get("NUM_IDEAS_PER_CONCEPT", 5))
 
+# --- Focused Re-generation Settings ---
+ENABLE_FOCUSED_REGENERATION = os.environ.get("ENABLE_FOCUSED_REGENERATION", "false").lower() == "true" # Disabled by default
+REGENERATION_TRIGGER_THRESHOLD = float(os.environ.get("REGENERATION_TRIGGER_THRESHOLD", 5.0)) # Trigger if score is below this
+NUM_REGENERATION_ATTEMPTS = int(os.environ.get("NUM_REGENERATION_ATTEMPTS", 1)) # Generate 1 alternative
+
 # --- Script Parameters ---
 try:
-    IDEAS_PER_BATCH = int(os.environ.get("IDEAS_PER_BATCH", 10)) # Used if multi-step/variation disabled
-    RATING_THRESHOLD = float(os.environ.get("RATING_THRESHOLD", 7.5)) # Keep lowered threshold for now
+    IDEAS_PER_BATCH = int(os.environ.get("IDEAS_PER_BATCH", 10))
+    RATING_THRESHOLD = float(os.environ.get("RATING_THRESHOLD", 7.5)) # Keep lowered threshold
     SEARCH_RESULTS_LIMIT = int(os.environ.get("SEARCH_RESULTS_LIMIT", 10))
     DELAY_BETWEEN_IDEAS = int(os.environ.get("DELAY_BETWEEN_IDEAS", 5))
     MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", 1))
@@ -83,16 +85,17 @@ try:
     SMTP_PORT = int(SMTP_PORT)
 except ValueError as e:
     logging.error(f"Error parsing numeric config: {e}. Using defaults.")
-    IDEAS_PER_BATCH = 10; RATING_THRESHOLD = 7.5; SEARCH_RESULTS_LIMIT = 10 # Keep lowered threshold
+    IDEAS_PER_BATCH = 10; RATING_THRESHOLD = 7.5; SEARCH_RESULTS_LIMIT = 10
     DELAY_BETWEEN_IDEAS = 5; MAX_CONCURRENT_TASKS = 1; MAX_SUMMARY_LENGTH = 2500
-    MAX_RUNS = 999999; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2
-    SMTP_PORT = 587; NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = 0.75 # Adjusted
+    MAX_RUNS = 999999; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2 # Continuous run default
+    SMTP_PORT = 587; NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = 0.75
     TREND_ANALYSIS_MIN_IDEAS = 10; TREND_ANALYSIS_RUN_INTERVAL = 5
-    TREND_NGRAM_COUNT = 3; TREND_LDA_TOPICS = 2; TREND_LDA_WORDS = 3 # Adjusted
-    TREND_CLUSTER_COUNT = 2; TREND_CLUSTER_THEMES_PER_CLUSTER = 1 # Adjusted
+    TREND_NGRAM_COUNT = 3; TREND_LDA_TOPICS = 2; TREND_LDA_WORDS = 3
+    TREND_CLUSTER_COUNT = 2; TREND_CLUSTER_THEMES_PER_CLUSTER = 1
     VARIATION_GENERATION_PROBABILITY = 0.25; VARIATION_SOURCE_MIN_RATING = 7.0
-    VARIATION_SOURCE_MAX_RATING = 7.4; NUM_VARIATIONS_TO_GENERATE = 5 # Adjusted max rating
+    VARIATION_SOURCE_MAX_RATING = 7.4; NUM_VARIATIONS_TO_GENERATE = 5
     NUM_CONCEPTS_TO_GENERATE = 5; NUM_CONCEPTS_TO_SELECT = 2; NUM_IDEAS_PER_CONCEPT = 5
+    REGENERATION_TRIGGER_THRESHOLD = 5.0; NUM_REGENERATION_ATTEMPTS = 1
 
 
 # --- Rating Weights ---
@@ -138,6 +141,7 @@ SELF_CRITIQUE_PROMPT_TEMPLATE = _prompts.get("SELF_CRITIQUE", "")
 CONCEPT_GENERATION_PROMPT_TEMPLATE = _prompts.get("CONCEPT_GENERATION", "")
 CONCEPT_SELECTION_PROMPT_TEMPLATE = _prompts.get("CONCEPT_SELECTION", "")
 SPECIFIC_IDEA_GENERATION_PROMPT_TEMPLATE = _prompts.get("SPECIFIC_IDEA_GENERATION", "")
+IDEA_REGENERATION_PROMPT_TEMPLATE = _prompts.get("IDEA_REGENERATION", "") # Load re-gen prompt
 
 
 # --- Validation ---
@@ -155,6 +159,9 @@ def validate_config():
     if ENABLE_VARIATION_GENERATION and not IDEA_VARIATION_PROMPT_TEMPLATE: logging.error("Variation generation enabled, but prompt missing."); valid = False
     if ENABLE_MULTI_STEP_GENERATION and not all([CONCEPT_GENERATION_PROMPT_TEMPLATE, CONCEPT_SELECTION_PROMPT_TEMPLATE, SPECIFIC_IDEA_GENERATION_PROMPT_TEMPLATE]):
          logging.error("Multi-step generation enabled, but prompts missing."); valid = False
+    if ENABLE_FOCUSED_REGENERATION and not IDEA_REGENERATION_PROMPT_TEMPLATE: # Check re-gen prompt
+         logging.error("Focused re-generation enabled, but IDEA_REGENERATION prompt missing.")
+         valid = False
     if ENABLE_EMAIL_NOTIFICATIONS:
         logging.info("Email notifications enabled. Validating SMTP settings...")
         email_valid = True
