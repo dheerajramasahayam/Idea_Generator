@@ -8,6 +8,7 @@ import random
 import math # For softmax calculation
 
 DB_FILE = config.STATE_FILE
+EXAMPLES_FILE = config.GENERATED_EXAMPLES_FILE # Use path from config
 
 def _does_column_exist(cursor, table_name, column_name):
     """Helper function to check if a column exists in a table."""
@@ -35,7 +36,7 @@ def init_db(db_path=DB_FILE):
         cursor.execute(create_ideas_table_sql)
         columns_to_add = [
             ('justifications', 'TEXT'), ('embedding_json', 'TEXT'),
-            ('description', 'TEXT'), ('source_prompt_type', 'TEXT') # Added source_prompt_type
+            ('description', 'TEXT'), ('source_prompt_type', 'TEXT')
         ]
         for col_name, col_type in columns_to_add:
             if not _does_column_exist(cursor, 'ideas', col_name):
@@ -99,10 +100,8 @@ def update_idea_state(idea_name, status, rating=None, justifications=None, embed
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        # Ensure source_prompt_type column exists before trying to update it
         if not _does_column_exist(cursor, 'ideas', 'source_prompt_type'):
-             source_prompt_type = None # Set to None if column doesn't exist
-
+             source_prompt_type = None
         cursor.execute('''
             INSERT OR REPLACE INTO ideas
             (idea_name_lower, original_idea_name, description, status, rating, justifications, embedding_json, source_prompt_type, processed_timestamp)
@@ -158,21 +157,18 @@ def fetch_and_clear_pending_ideas(limit, db_path=DB_FILE):
 
 def update_prompt_performance(prompt_type, rating, db_path=DB_FILE):
     """Updates the performance metrics for a given prompt type."""
-    if rating is None or prompt_type is None: return # Cannot update without rating and type
+    if rating is None or prompt_type is None: return
     conn = None
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        # Ensure row exists
         cursor.execute("INSERT OR IGNORE INTO prompt_performance (prompt_type) VALUES (?)", (prompt_type,))
-        # Update totals
         cursor.execute("""
             UPDATE prompt_performance
             SET total_generated = total_generated + 1,
                 total_rating = total_rating + ?
             WHERE prompt_type = ?
         """, (rating, prompt_type))
-        # Recalculate and update average
         cursor.execute("""
             UPDATE prompt_performance
             SET average_rating = total_rating / total_generated
@@ -201,12 +197,58 @@ def get_prompt_performance(db_path=DB_FILE):
         if conn: conn.close()
     return performance_data
 
+# --- Functions for Generated Examples ---
+
+def save_generated_examples(examples_list, filepath=EXAMPLES_FILE):
+    """Saves the list of generated examples to a JSON file."""
+    try:
+        # Ensure directory exists
+        output_dir = os.path.dirname(filepath)
+        if output_dir and not os.path.exists(output_dir):
+            os.makedirs(output_dir, exist_ok=True)
+            logging.info(f"Created directory for examples file: {output_dir}")
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            json.dump(examples_list, f, indent=2)
+        logging.info(f"Saved {len(examples_list)} generated examples to {filepath}")
+    except Exception as e:
+        logging.error(f"Error saving generated examples to {filepath}: {e}")
+
+def load_generated_examples(filepath=EXAMPLES_FILE):
+    """Loads the list of generated examples from a JSON file."""
+    if not os.path.exists(filepath):
+        logging.info(f"Generated examples file not found: {filepath}. Returning empty list.")
+        return []
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            examples = json.load(f)
+        if isinstance(examples, list):
+            # Basic validation: ensure items are strings
+            valid_examples = [item for item in examples if isinstance(item, str)]
+            if len(valid_examples) != len(examples):
+                logging.warning(f"Some non-string items found in {filepath}. Loading only strings.")
+            logging.info(f"Loaded {len(valid_examples)} generated examples from {filepath}")
+            return valid_examples
+        else:
+            logging.warning(f"Invalid format in {filepath}, expected a list.")
+            os.remove(filepath) # Remove invalid file
+            logging.info(f"Removed invalid examples file: {filepath}")
+            return []
+    except (json.JSONDecodeError, Exception) as e:
+        logging.error(f"Error loading generated examples from {filepath}: {e}")
+        # Attempt to remove corrupted file
+        try:
+            os.remove(filepath)
+            logging.info(f"Removed potentially corrupted examples file: {filepath}")
+        except OSError as rm_err:
+            logging.error(f"Could not remove corrupted examples file {filepath}: {rm_err}")
+        return []
+
 
 # --- Functions for Analysis/Feedback ---
 
 def get_low_rated_embeddings(threshold=4.0, limit=100, db_path=DB_FILE):
     """Retrieves embeddings (as lists) of low-rated ideas."""
-    # ... (implementation remains the same) ...
     embeddings = []
     conn = None
     try:
@@ -231,7 +273,6 @@ def get_low_rated_embeddings(threshold=4.0, limit=100, db_path=DB_FILE):
 
 def get_low_rated_texts(threshold=4.0, limit=50, db_path=DB_FILE):
     """Retrieves names and descriptions of low-rated ideas for keyword extraction."""
-    # ... (implementation remains the same) ...
     texts = []
     conn = None
     try:
@@ -255,8 +296,7 @@ def get_low_rated_texts(threshold=4.0, limit=50, db_path=DB_FILE):
 
 
 def get_high_rated_ideas(threshold=config.RATING_THRESHOLD, limit=50, db_path=DB_FILE):
-    """Retrieves high-rated ideas (name, desc, rating, embedding) for trend analysis, based purely on rating threshold."""
-    # ... (implementation remains the same - already filters only on rating) ...
+    """Retrieves high-rated ideas (name, desc, rating, embedding) for trend analysis/example generation, based purely on rating threshold."""
     ideas_data = []
     conn = None
     try:
@@ -271,7 +311,7 @@ def get_high_rated_ideas(threshold=config.RATING_THRESHOLD, limit=50, db_path=DB
                                 WHERE rating IS NOT NULL AND rating >= ?
                                 ORDER BY rating DESC, processed_timestamp DESC LIMIT ? ''', (threshold, limit))
             rows = cursor.fetchall()
-            logging.info(f"Found {len(rows)} ideas with rating >= {threshold} for trend analysis.")
+            logging.info(f"Found {len(rows)} ideas with rating >= {threshold} for trend analysis/example source.")
             for row in rows:
                  data = {"name": row[0], "rating": row[1]}; col_index = 2
                  if has_desc: data["description"] = row[col_index]; col_index += 1
@@ -287,7 +327,6 @@ def get_high_rated_ideas(threshold=config.RATING_THRESHOLD, limit=50, db_path=DB
 
 def get_variation_candidate_ideas(min_rating, max_rating, limit=10, db_path=DB_FILE):
     """Retrieves moderately rated ideas suitable for generating variations."""
-    # ... (implementation remains the same) ...
     candidates = []
     conn = None
     try:
@@ -316,7 +355,6 @@ def get_variation_candidate_ideas(min_rating, max_rating, limit=10, db_path=DB_F
 
 def get_recent_ratings(limit=50, db_path=DB_FILE):
     """Retrieves the ratings of the most recently processed ideas."""
-    # ... (implementation remains the same) ...
     ratings = []
     conn = None
     try:
@@ -335,7 +373,6 @@ def get_recent_ratings(limit=50, db_path=DB_FILE):
 
 def save_rated_idea(idea_name, rating, justifications, filename=config.OUTPUT_FILE):
     """Appends a high-scoring idea and its justifications to the main output file."""
-    # ... (implementation remains the same) ...
     logging.info(f"--- Saving high-scoring idea to '{filename}': '{idea_name}' (Score: {rating:.1f}) ---")
     try:
         os.makedirs(os.path.dirname(filename) or '.', exist_ok=True)

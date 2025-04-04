@@ -76,6 +76,12 @@ ENABLE_DYNAMIC_PROMPT_SELECTION = os.environ.get("ENABLE_DYNAMIC_PROMPT_SELECTIO
 DYNAMIC_SELECTION_MIN_DATA = int(os.environ.get("DYNAMIC_SELECTION_MIN_DATA", 10)) # Min ideas per type before using its avg rating
 DYNAMIC_SELECTION_TEMP = float(os.environ.get("DYNAMIC_SELECTION_TEMP", 0.1)) # Softmax temperature (lower = more greedy)
 
+# --- Automated Example Generation Settings ---
+ENABLE_AUTO_EXAMPLE_GENERATION = os.environ.get("ENABLE_AUTO_EXAMPLE_GENERATION", "false").lower() == "true" # Disabled by default
+AUTO_EXAMPLE_RUN_INTERVAL = int(os.environ.get("AUTO_EXAMPLE_RUN_INTERVAL", 20)) # How often (in runs) to generate new examples
+AUTO_EXAMPLE_SOURCE_COUNT = int(os.environ.get("AUTO_EXAMPLE_SOURCE_COUNT", 10)) # How many top ideas to use as source
+AUTO_EXAMPLE_TARGET_COUNT = int(os.environ.get("AUTO_EXAMPLE_TARGET_COUNT", 3)) # How many new examples to generate
+
 # --- Script Parameters ---
 try:
     IDEAS_PER_BATCH = int(os.environ.get("IDEAS_PER_BATCH", 10))
@@ -84,15 +90,17 @@ try:
     DELAY_BETWEEN_IDEAS = int(os.environ.get("DELAY_BETWEEN_IDEAS", 5))
     MAX_CONCURRENT_TASKS = int(os.environ.get("MAX_CONCURRENT_TASKS", 1))
     MAX_SUMMARY_LENGTH = int(os.environ.get("MAX_SUMMARY_LENGTH", 2500))
-    MAX_RUNS = int(os.environ.get("MAX_RUNS", 10)) # Limit to 10 runs for testing dynamic selection
+    MAX_RUNS = int(os.environ.get("MAX_RUNS", 999999)) # Default for continuous running
     WAIT_BETWEEN_BATCHES = int(os.environ.get("WAIT_BETWEEN_BATCHES", 10))
     EXPLORE_RATIO = float(os.environ.get("EXPLORE_RATIO", 0.2))
-    SMTP_PORT = int(SMTP_PORT)
+    # Ensure SMTP_PORT is treated as integer
+    smtp_port_str = os.environ.get("SMTP_PORT", "587")
+    SMTP_PORT = int(smtp_port_str) if smtp_port_str.isdigit() else 587
 except ValueError as e:
     logging.error(f"Error parsing numeric config: {e}. Using defaults.")
     IDEAS_PER_BATCH = 10; RATING_THRESHOLD = 7.5; SEARCH_RESULTS_LIMIT = 10
     DELAY_BETWEEN_IDEAS = 5; MAX_CONCURRENT_TASKS = 1; MAX_SUMMARY_LENGTH = 2500
-    MAX_RUNS = 10; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2 # Limit to 10 runs
+    MAX_RUNS = 999999; WAIT_BETWEEN_BATCHES = 10; EXPLORE_RATIO = 0.2
     SMTP_PORT = 587; NEGATIVE_FEEDBACK_SIMILARITY_THRESHOLD = 0.75
     TREND_ANALYSIS_MIN_IDEAS = 10; TREND_ANALYSIS_RUN_INTERVAL = 5
     TREND_NGRAM_COUNT = 3; TREND_LDA_TOPICS = 2; TREND_LDA_WORDS = 3
@@ -102,6 +110,7 @@ except ValueError as e:
     NUM_CONCEPTS_TO_GENERATE = 5; NUM_CONCEPTS_TO_SELECT = 2; NUM_IDEAS_PER_CONCEPT = 5
     REGENERATION_TRIGGER_THRESHOLD = 5.0; NUM_REGENERATION_ATTEMPTS = 1
     DYNAMIC_SELECTION_MIN_DATA = 10; DYNAMIC_SELECTION_TEMP = 0.1
+    AUTO_EXAMPLE_RUN_INTERVAL = 20; AUTO_EXAMPLE_SOURCE_COUNT = 10; AUTO_EXAMPLE_TARGET_COUNT = 3
 
 
 # --- Rating Weights ---
@@ -113,21 +122,20 @@ else: num_criteria = len(RATING_WEIGHTS); RATING_WEIGHTS = {k: 1.0 / num_criteri
 # --- File Paths ---
 OUTPUT_FILE = "gemini_rated_ideas.md"; STATE_FILE = "ideas_state.db"; LOG_FILE = "automator.log"
 PROMPT_FILE = "prompts.json"
+GENERATED_EXAMPLES_FILE = "generated_examples.json" # File to store dynamic examples
 
 # --- Load Prompts from JSON ---
+_prompts = {} # Initialize empty
 try:
     with open(PROMPT_FILE, 'r', encoding='utf-8') as f:
         _prompts = json.load(f)
     logging.info(f"Successfully loaded prompts from {PROMPT_FILE}")
 except FileNotFoundError:
     logging.error(f"Prompt file '{PROMPT_FILE}' not found. Using empty prompts.")
-    _prompts = {}
 except json.JSONDecodeError as e:
     logging.error(f"Error decoding JSON from '{PROMPT_FILE}': {e}. Using empty prompts.")
-    _prompts = {}
 except Exception as e:
      logging.error(f"Unexpected error loading prompts from '{PROMPT_FILE}': {e}. Using empty prompts.")
-     _prompts = {}
 
 # Assign prompts to variables & create mapping for dynamic selection
 IDEA_GENERATION_PROMPT_TEMPLATES = []
@@ -147,8 +155,10 @@ _add_prompt("IDEA_GENERATION_DATA", "data")
 _add_prompt("IDEA_GENERATION_AI", "ai")
 
 if not IDEA_GENERATION_PROMPT_TEMPLATES:
-     logging.error("No valid IDEA_GENERATION prompts loaded!"); IDEA_GENERATION_PROMPT_TEMPLATES = ["Generate {num_ideas} SaaS ideas."] # Fallback
-     PROMPT_TYPE_MAP[IDEA_GENERATION_PROMPT_TEMPLATES[0]] = "fallback"
+     logging.error("No valid IDEA_GENERATION prompts loaded! Using fallback.")
+     fallback_prompt = "Generate {num_ideas} SaaS ideas."
+     IDEA_GENERATION_PROMPT_TEMPLATES = [fallback_prompt]
+     PROMPT_TYPE_MAP[fallback_prompt] = "fallback"
 
 IDEA_DESCRIPTION_PROMPT_TEMPLATE = _prompts.get("IDEA_DESCRIPTION", "")
 IDEA_VARIATION_PROMPT_TEMPLATE = _prompts.get("IDEA_VARIATION", "")
@@ -160,6 +170,7 @@ CONCEPT_GENERATION_PROMPT_TEMPLATE = _prompts.get("CONCEPT_GENERATION", "")
 CONCEPT_SELECTION_PROMPT_TEMPLATE = _prompts.get("CONCEPT_SELECTION", "")
 SPECIFIC_IDEA_GENERATION_PROMPT_TEMPLATE = _prompts.get("SPECIFIC_IDEA_GENERATION", "")
 IDEA_REGENERATION_PROMPT_TEMPLATE = _prompts.get("IDEA_REGENERATION", "")
+EXAMPLE_SYNTHESIS_PROMPT_TEMPLATE = _prompts.get("EXAMPLE_SYNTHESIS", "") # Load example synthesis prompt
 
 
 # --- Validation ---
@@ -167,8 +178,11 @@ def validate_config():
     """Checks if essential API keys, prompts, and required email settings are loaded."""
     valid = True
     if not SEARCH_PROVIDER: logging.error("No valid Search API provider configured."); valid = False
-    # ... (rest of validation remains the same) ...
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY": logging.error("GEMINI_API_KEY missing."); valid = False
+    elif SEARCH_PROVIDER == "google" and (not GOOGLE_API_KEY or not GOOGLE_CSE_ID): logging.error("Google Search keys missing."); valid = False
+    elif SEARCH_PROVIDER == "serper" and not SERPER_API_KEY: logging.error("Serper Search key missing."); valid = False
+    elif SEARCH_PROVIDER == "brave" and (not BRAVE_API_KEY or BRAVE_API_KEY == "YOUR_BRAVE_API_KEY"): logging.error("Brave Search key missing or placeholder."); valid = False # Added placeholder check
+
+    if not GEMINI_API_KEY or GEMINI_API_KEY == "YOUR_GEMINI_API_KEY": logging.error("GEMINI_API_KEY missing or placeholder."); valid = False # Added placeholder check
     if not IDEA_GENERATION_PROMPT_TEMPLATES: logging.error("No IDEA_GENERATION prompts loaded."); valid = False
     if not all([IDEA_DESCRIPTION_PROMPT_TEMPLATE, SEARCH_QUERY_GENERATION_PROMPT_TEMPLATE, FACT_EXTRACTION_PROMPT_TEMPLATE, RATING_PROMPT_TEMPLATE, SELF_CRITIQUE_PROMPT_TEMPLATE]):
          logging.error("One or more essential prompt templates failed to load."); valid = False
@@ -177,6 +191,9 @@ def validate_config():
          logging.error("Multi-step generation enabled, but prompts missing."); valid = False
     if ENABLE_FOCUSED_REGENERATION and not IDEA_REGENERATION_PROMPT_TEMPLATE:
          logging.error("Focused re-generation enabled, but IDEA_REGENERATION prompt missing.")
+         valid = False
+    if ENABLE_AUTO_EXAMPLE_GENERATION and not EXAMPLE_SYNTHESIS_PROMPT_TEMPLATE: # Check example synthesis prompt
+         logging.error("Auto example generation enabled, but EXAMPLE_SYNTHESIS prompt missing.")
          valid = False
     if ENABLE_EMAIL_NOTIFICATIONS:
         logging.info("Email notifications enabled. Validating SMTP settings...")

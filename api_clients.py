@@ -40,11 +40,20 @@ async def call_gemini_api_async(session, prompt):
                 response_data = await response.json()
 
                 if 'candidates' in response_data and response_data['candidates']:
-                    content = response_data['candidates'][0].get('content')
+                    # Handle cases where content might be missing (e.g., safety filters)
+                    candidate = response_data['candidates'][0]
+                    if 'content' not in candidate:
+                         finish_reason = candidate.get('finishReason', 'UNKNOWN')
+                         safety_ratings = candidate.get('safetyRatings', [])
+                         logging.warning(f"Gemini API call finished but no content. Reason: {finish_reason}. Safety: {safety_ratings}")
+                         return None # Or handle specific finish reasons differently
+
+                    content = candidate.get('content')
                     if content and 'parts' in content and content['parts']:
                         text_response = content['parts'][0].get('text')
                         if text_response: logging.info("Gemini API call successful."); return text_response.strip()
 
+                # Check for prompt feedback if no valid candidate content
                 block_reason = response_data.get('promptFeedback', {}).get('blockReason')
                 if block_reason: logging.warning(f"Gemini API blocked prompt. Reason: {block_reason}"); return None
                 else: logging.error(f"Unexpected Gemini response structure: {response_data}"); return None
@@ -78,6 +87,11 @@ async def generate_regenerated_ideas_async(session, regeneration_prompt):
     """Generates alternative ideas based on feedback using the Gemini API."""
     logging.info(">>> Generating alternative ideas (focused re-generation)...")
     return await call_gemini_api_async(session, regeneration_prompt)
+
+async def generate_new_examples_async(session, example_prompt):
+    """Generates new 'good examples' based on successful ideas using the Gemini API."""
+    logging.info(">>> Generating new examples for prompts...")
+    return await call_gemini_api_async(session, example_prompt)
 
 
 async def call_search_api_async(session, query):
