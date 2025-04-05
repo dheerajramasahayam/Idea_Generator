@@ -63,11 +63,18 @@ async def main():
                     else: logging.info(f"Keeping explore ratio at {current_explore_ratio:.2f}")
                 else: logging.info(f"Not enough recent ratings ({len(recent_ratings)}) to adjust explore ratio.")
 
+                # --- Trend Analysis (Periodic) ---
                 if (run_count - 1) % config.TREND_ANALYSIS_RUN_INTERVAL == 0:
-                     high_rated_ideas_data = state_manager.get_high_rated_ideas(threshold=config.RATING_THRESHOLD, limit=100)
+                     # Use a higher threshold (8.0) specifically for sourcing trend analysis data
+                     trend_analysis_threshold = 8.0
+                     logging.info(f"Running trend analysis using ideas rated >= {trend_analysis_threshold}")
+                     high_rated_ideas_data = state_manager.get_high_rated_ideas(threshold=trend_analysis_threshold, limit=100)
                      if high_rated_ideas_data and len(high_rated_ideas_data) >= config.TREND_ANALYSIS_MIN_IDEAS:
                           promising_themes = analysis_utils.get_combined_themes(high_rated_ideas_data)
-                     else: logging.info("Skipping trend analysis: Not enough high-rated ideas meeting threshold."); promising_themes = []
+                          logging.info(f"Updated promising themes: {promising_themes}")
+                     else:
+                          logging.info(f"Skipping trend analysis: Not enough ideas ({len(high_rated_ideas_data or [])}) meeting threshold {trend_analysis_threshold} (min: {config.TREND_ANALYSIS_MIN_IDEAS}).")
+                          promising_themes = [] # Clear themes if not enough data
             else: logging.info(f"Initial explore ratio: {current_explore_ratio:.2f}"); promising_themes = []
 
             # --- Automated Example Generation (Periodic) ---
